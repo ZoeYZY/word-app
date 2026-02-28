@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🌸 Zoe 的单词默写本 🌸</title>
+  <meta name="description" content="可爱的中文单词默写应用，帮助小朋友练习生字词" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pinyin-pro@3.18.2/dist/index.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            pink: {
+              50: '#fef1f7', 100: '#fee5f0', 200: '#fecce3',
+              300: '#ffa2cb', 400: '#ff6ea8', 500: '#ff4088',
+              600: '#f01d6a', 700: '#d2104f', 800: '#ad1243',
+              900: '#90143b',
+            },
+            candy: {
+              light: '#fff0f6', DEFAULT: '#ffb6d9', dark: '#ff7eb3',
+            }
+          },
+          fontFamily: {
+            cute: ['"Comic Sans MS"', '"KaiTi"', '"楷体"', 'cursive'],
+          },
+          animation: {
+            'bounce-slow': 'bounce 2s infinite',
+            'float': 'float 3s ease-in-out infinite',
+            'sparkle': 'sparkle 1.5s ease-in-out infinite',
+            'slide-up': 'slideUp 0.5s ease-out',
+            'pop': 'pop 0.3s ease-out',
+            'confetti': 'confetti 1s ease-out forwards',
+          },
+          keyframes: {
+            float: {
+              '0%, 100%': { transform: 'translateY(0)' },
+              '50%': { transform: 'translateY(-10px)' },
+            },
+            sparkle: {
+              '0%, 100%': { opacity: '1', transform: 'scale(1)' },
+              '50%': { opacity: '0.7', transform: 'scale(1.1)' },
+            },
+            slideUp: {
+              '0%': { opacity: '0', transform: 'translateY(20px)' },
+              '100%': { opacity: '1', transform: 'translateY(0)' },
+            },
+            pop: {
+              '0%': { transform: 'scale(0.8)', opacity: '0' },
+              '100%': { transform: 'scale(1)', opacity: '1' },
+            },
+            confetti: {
+              '0%': { transform: 'translateY(0) rotate(0deg)', opacity: '1' },
+              '100%': { transform: 'translateY(-200px) rotate(720deg)', opacity: '0' },
+            },
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=ZCOOL+KuaiLe&display=swap');
+    body {
+      font-family: 'ZCOOL KuaiLe', 'Comic Sans MS', cursive;
+      background: linear-gradient(135deg, #fff0f6 0%, #ffe0ec 30%, #ffd6e7 50%, #ffe8f0 70%, #fff5f9 100%);
+      min-height: 100vh;
+    }
+    .glass-card {
+      background: rgba(255,255,255,0.75);
+      backdrop-filter: blur(12px);
+      border: 2px solid rgba(255,182,217,0.4);
+    }
+    .btn-candy {
+      background: linear-gradient(135deg, #ff9fd4 0%, #ff6ea8 100%);
+      color: white;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 15px rgba(255,110,168,0.3);
+    }
+    .btn-candy:hover {
+      transform: translateY(-2px) scale(1.03);
+      box-shadow: 0 6px 20px rgba(255,110,168,0.45);
+    }
+    .btn-candy:active { transform: translateY(0) scale(0.98); }
+    .word-card {
+      background: linear-gradient(135deg, #fff5f9, #ffe8f0);
+      border: 3px solid #ffb6d9;
+      transition: all 0.4s ease;
+    }
+    .word-card:hover {
+      transform: scale(1.02);
+      box-shadow: 0 8px 25px rgba(255,150,200,0.3);
+    }
+    .pinyin-text {
+      font-family: 'Ma Shan Zheng', serif;
+      color: #e0559a;
+    }
+    .progress-bar {
+      background: linear-gradient(90deg, #ff9fd4, #ff6ea8, #ff4088);
+      transition: width 0.5s ease;
+    }
+    .lesson-tag {
+      background: linear-gradient(135deg, #ffeaf3, #ffd6e7);
+      border: 1.5px solid #ffb6d9;
+    }
+    .floating-emoji {
+      position: fixed;
+      pointer-events: none;
+      font-size: 2rem;
+      z-index: 999;
+    }
+    .tab-btn.active {
+      background: linear-gradient(135deg, #ff9fd4, #ff6ea8);
+      color: white;
+      box-shadow: 0 4px 15px rgba(255,110,168,0.3);
+    }
+    .tab-btn:not(.active) {
+      background: rgba(255,255,255,0.6);
+      color: #e0559a;
+    }
+    input[type="file"]::file-selector-button {
+      background: linear-gradient(135deg, #ff9fd4, #ff6ea8);
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 20px;
+      cursor: pointer;
+      font-family: 'ZCOOL KuaiLe', cursive;
+      margin-right: 10px;
+    }
+    /* confetti container */
+    .confetti-piece {
+      position: fixed;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 9999;
+    }
+    /* scrollbar styling */
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: #fff0f6; border-radius: 10px; }
+    ::-webkit-scrollbar-thumb { background: #ffb6d9; border-radius: 10px; }
+    ::-webkit-scrollbar-thumb:hover { background: #ff9fd4; }
+  </style>
+</head>
+<body class="p-4 md:p-8">
+
+  <!-- Header -->
+  <header class="text-center mb-6 animate-slide-up">
+    <h1 class="text-4xl md:text-5xl font-bold text-pink-600 mb-2 animate-float">
+      🌸 Zoe 的单词默写本 🌸
+    </h1>
+    <p class="text-pink-400 text-lg">认真写字，每天进步一点点 ✨</p>
+  </header>
+
+  <!-- Tab Navigation -->
+  <nav class="flex justify-center gap-3 mb-6 animate-slide-up" style="animation-delay:0.1s">
+    <button id="tabLibrary" onclick="switchTab('library')"
+      class="tab-btn active px-6 py-3 rounded-full text-lg font-bold transition-all duration-300">
+      📚 词库管理
+    </button>
+    <button id="tabDictation" onclick="switchTab('dictation')"
+      class="tab-btn px-6 py-3 rounded-full text-lg font-bold transition-all duration-300">
+      ✏️ 开始默写
+    </button>
+  </nav>
+
+  <!-- ==================== 词库管理页 ==================== -->
+  <section id="pageLibrary" class="max-w-3xl mx-auto space-y-6">
+
+    <!-- 上传 PDF -->
+    <div class="glass-card rounded-3xl p-6 animate-slide-up" style="animation-delay:0.2s">
+      <h2 class="text-2xl font-bold text-pink-600 mb-4">📄 上传 PDF 词表</h2>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-pink-500 mb-1 text-sm">课文名称</label>
+          <input id="lessonName" type="text" placeholder="例如：第1课 春天来了"
+            class="w-full px-4 py-3 rounded-2xl border-2 border-pink-200 focus:border-pink-400 focus:outline-none bg-white/70 text-pink-700 placeholder-pink-300" />
+        </div>
+        <div>
+          <label class="block text-pink-500 mb-1 text-sm">选择 PDF 文件</label>
+          <input id="pdfInput" type="file" accept=".pdf"
+            class="w-full px-4 py-3 rounded-2xl border-2 border-pink-200 bg-white/70 text-pink-600" />
+        </div>
+        <div id="uploadStatus" class="text-pink-400 text-sm hidden"></div>
+        <!-- Preview extracted words -->
+        <div id="previewArea" class="hidden">
+          <h3 class="text-pink-600 font-bold mb-2">🔍 识别到的词语：</h3>
+          <div id="previewWords" class="flex flex-wrap gap-2 mb-3"></div>
+          <button onclick="confirmImport()" class="btn-candy px-6 py-2 rounded-full font-bold">
+            ✅ 确认导入
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 手动添加 -->
+    <div class="glass-card rounded-3xl p-6 animate-slide-up" style="animation-delay:0.3s">
+      <h2 class="text-2xl font-bold text-pink-600 mb-4">✍️ 手动添加词语</h2>
+      <div class="flex flex-col sm:flex-row gap-3">
+        <input id="manualLesson" type="text" placeholder="课文名称"
+          class="flex-1 px-4 py-3 rounded-2xl border-2 border-pink-200 focus:border-pink-400 focus:outline-none bg-white/70 text-pink-700 placeholder-pink-300" />
+        <input id="manualWords" type="text" placeholder="词语（空格分隔）"
+          class="flex-1 px-4 py-3 rounded-2xl border-2 border-pink-200 focus:border-pink-400 focus:outline-none bg-white/70 text-pink-700 placeholder-pink-300" />
+        <button onclick="addManualWords()" class="btn-candy px-6 py-3 rounded-full font-bold whitespace-nowrap">
+          ➕ 添加
+        </button>
+      </div>
+    </div>
+
+    <!-- 词库展示 -->
+    <div class="glass-card rounded-3xl p-6 animate-slide-up" style="animation-delay:0.4s">
+      <h2 class="text-2xl font-bold text-pink-600 mb-4">🗂️ 我的词库</h2>
+      <div id="libraryContent"></div>
+      <div id="emptyLibrary" class="text-center text-pink-300 py-8">
+        <div class="text-5xl mb-3">📖</div>
+        <p>词库是空的，快上传一份 PDF 吧！</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== 默写模式页 ==================== -->
+  <section id="pageDictation" class="max-w-2xl mx-auto hidden">
+
+    <!-- 选课页 -->
+    <div id="selectLessonView" class="glass-card rounded-3xl p-6 animate-slide-up">
+      <h2 class="text-2xl font-bold text-pink-600 mb-4">📋 选择要默写的课文</h2>
+      <div id="lessonCheckboxes" class="space-y-3 mb-4"></div>
+      <div id="noLessonsMsg" class="text-center text-pink-300 py-6">
+        <div class="text-4xl mb-2">😿</div>
+        <p>还没有词语哦，先去词库添加吧！</p>
+      </div>
+      <button id="startBtn" onclick="startDictation()"
+        class="btn-candy w-full py-4 rounded-2xl text-xl font-bold hidden">
+        🚀 开始默写！
+      </button>
+    </div>
+
+    <!-- 默写中 -->
+    <div id="dictationView" class="hidden space-y-6">
+      <!-- Progress -->
+      <div class="glass-card rounded-3xl p-4 animate-slide-up">
+        <div class="flex justify-between items-center mb-2">
+          <span class="text-pink-500 font-bold" id="progressText">第 1/10 个</span>
+          <span class="text-pink-400 text-sm" id="lessonLabel"></span>
+        </div>
+        <div class="w-full h-4 bg-pink-100 rounded-full overflow-hidden">
+          <div id="progressBar" class="progress-bar h-full rounded-full" style="width:0%"></div>
+        </div>
+      </div>
+
+      <!-- Word Card -->
+      <div id="wordCard" class="word-card rounded-3xl p-8 text-center animate-pop">
+        <div class="pinyin-text text-3xl md:text-4xl mb-4" id="pinyinDisplay">pīn yīn</div>
+        <div class="text-6xl md:text-7xl font-bold text-pink-600 mb-2 opacity-0" id="wordReveal">词语</div>
+        <button onclick="revealWord()" id="revealBtn"
+          class="mt-2 px-4 py-1 rounded-full text-sm bg-pink-100 text-pink-500 hover:bg-pink-200 transition">
+          👀 偷看答案
+        </button>
+      </div>
+
+      <!-- Controls -->
+      <div class="flex justify-center gap-4 animate-slide-up" style="animation-delay:0.2s">
+        <button onclick="replayWord()"
+          class="glass-card px-6 py-4 rounded-2xl text-pink-600 font-bold text-lg hover:scale-105 transition-all duration-300 flex items-center gap-2">
+          🔊 再听一次
+        </button>
+        <button onclick="nextWord()"
+          class="btn-candy px-8 py-4 rounded-2xl text-lg font-bold flex items-center gap-2">
+          ➡️ 下一个
+        </button>
+      </div>
+
+      <!-- Quit -->
+      <div class="text-center">
+        <button onclick="quitDictation()"
+          class="text-pink-300 hover:text-pink-500 transition text-sm underline">
+          退出默写
+        </button>
+      </div>
+    </div>
+
+    <!-- 完成页 -->
+    <div id="completeView" class="hidden">
+      <div class="glass-card rounded-3xl p-8 text-center animate-pop">
+        <div class="text-7xl mb-4 animate-bounce-slow">🎉</div>
+        <h2 class="text-3xl font-bold text-pink-600 mb-2">太棒啦！</h2>
+        <p class="text-pink-400 text-lg mb-2">你完成了 <span id="totalCount" class="font-bold text-pink-600">0</span> 个词语的默写！</p>
+        <p class="text-pink-300 mb-6">继续加油哦，你是最棒的！⭐</p>
+        <div class="flex justify-center gap-4">
+          <button onclick="restartDictation()"
+            class="btn-candy px-6 py-3 rounded-full font-bold">
+            🔄 再来一次
+          </button>
+          <button onclick="switchTab('library')"
+            class="glass-card px-6 py-3 rounded-full font-bold text-pink-600 hover:scale-105 transition">
+            📚 回词库
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Floating decorations -->
+  <div class="fixed top-4 left-4 text-3xl animate-float opacity-40 pointer-events-none">🌷</div>
+  <div class="fixed top-20 right-8 text-2xl animate-float opacity-30 pointer-events-none" style="animation-delay:1s">🦋</div>
+  <div class="fixed bottom-10 left-10 text-3xl animate-float opacity-30 pointer-events-none" style="animation-delay:0.5s">🌼</div>
+  <div class="fixed bottom-20 right-12 text-2xl animate-float opacity-40 pointer-events-none" style="animation-delay:1.5s">⭐</div>
+
+<script>
+  // ==================== 全局状态 ====================
+  const STORAGE_KEY = 'zoe_word_library';
+  let library = loadLibrary();       // { lessons: [{ name, words }] }
+  let currentWords = [];             // 当前默写的词语列表
+  let currentIndex = 0;              // 当前默写到第几个
+  let pendingWords = [];             // 待确认导入的词语
+  let selectedLessonIndices = [];    // 已选课文索引
+
+  // ==================== 初始化 pdf.js ====================
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+  // ==================== 存储 ====================
+  function loadLibrary() {
+    try {
+      const data = localStorage.getItem(STORAGE_KEY);
+      return data ? JSON.parse(data) : { lessons: [] };
+    } catch { return { lessons: [] }; }
+  }
+
+  function saveLibrary() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(library));
+    renderLibrary();
+  }
+
+  // ==================== Tab 切换 ====================
+  function switchTab(tab) {
+    const isLibrary = tab === 'library';
+    document.getElementById('pageLibrary').classList.toggle('hidden', !isLibrary);
+    document.getElementById('pageDictation').classList.toggle('hidden', isLibrary);
+    document.getElementById('tabLibrary').classList.toggle('active', isLibrary);
+    document.getElementById('tabDictation').classList.toggle('active', !isLibrary);
+
+    if (!isLibrary) {
+      renderLessonSelection();
+      // Reset dictation views
+      document.getElementById('selectLessonView').classList.remove('hidden');
+      document.getElementById('dictationView').classList.add('hidden');
+      document.getElementById('completeView').classList.add('hidden');
+    }
+  }
+
+  // ==================== PDF 上传 & 解析 ====================
+  document.getElementById('pdfInput').addEventListener('change', async function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const statusEl = document.getElementById('uploadStatus');
+    statusEl.classList.remove('hidden');
+    statusEl.textContent = '🔄 正在解析 PDF...';
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let fullText = '';
+
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        const pageText = content.items.map(item => item.str).join(' ');
+        fullText += pageText + ' ';
+      }
+
+      // 提取中文词语（≥2 字）
+      const matches = fullText.match(/[\u4e00-\u9fa5]{2,}/g) || [];
+      // 去重
+      pendingWords = [...new Set(matches)];
+
+      if (pendingWords.length === 0) {
+        statusEl.textContent = '😢 没有识别到词语，请检查 PDF 内容';
+        document.getElementById('previewArea').classList.add('hidden');
+        return;
+      }
+
+      statusEl.textContent = `✅ 共识别到 ${pendingWords.length} 个词语`;
+      renderPreview();
+    } catch (err) {
+      statusEl.textContent = '❌ PDF 解析失败：' + err.message;
+      console.error(err);
+    }
+  });
+
+  function renderPreview() {
+    const container = document.getElementById('previewWords');
+    container.innerHTML = '';
+    pendingWords.forEach((word, idx) => {
+      const span = document.createElement('span');
+      span.className = 'inline-flex items-center gap-1 px-3 py-1 rounded-full bg-pink-100 text-pink-600 text-sm cursor-pointer hover:bg-pink-200 transition';
+      span.innerHTML = `${word} <button onclick="removePendingWord(${idx})" class="text-pink-400 hover:text-pink-600 ml-1">✕</button>`;
+      container.appendChild(span);
+    });
+    document.getElementById('previewArea').classList.remove('hidden');
+  }
+
+  function removePendingWord(idx) {
+    pendingWords.splice(idx, 1);
+    renderPreview();
+  }
+
+  function confirmImport() {
+    const lessonName = document.getElementById('lessonName').value.trim();
+    if (!lessonName) {
+      alert('🌸 请先输入课文名称哦！');
+      return;
+    }
+    if (pendingWords.length === 0) return;
+
+    // 查找已有课文或新建
+    let lesson = library.lessons.find(l => l.name === lessonName);
+    if (lesson) {
+      // 合并去重
+      const existingSet = new Set(lesson.words);
+      pendingWords.forEach(w => existingSet.add(w));
+      lesson.words = [...existingSet];
+    } else {
+      library.lessons.push({ name: lessonName, words: [...pendingWords] });
+    }
+
+    saveLibrary();
+    pendingWords = [];
+    document.getElementById('previewArea').classList.add('hidden');
+    document.getElementById('uploadStatus').textContent = '🎉 导入成功！';
+    document.getElementById('pdfInput').value = '';
+    document.getElementById('lessonName').value = '';
+    spawnEmoji('🎉');
+  }
+
+  // ==================== 手动添加 ====================
+  function addManualWords() {
+    const lessonName = document.getElementById('manualLesson').value.trim();
+    const wordsStr = document.getElementById('manualWords').value.trim();
+
+    if (!lessonName) { alert('🌸 请输入课文名称！'); return; }
+    if (!wordsStr) { alert('🌸 请输入词语！'); return; }
+
+    const words = wordsStr.split(/[\s,，、;；]+/).filter(w => w.length >= 1);
+    if (words.length === 0) return;
+
+    let lesson = library.lessons.find(l => l.name === lessonName);
+    if (lesson) {
+      const existingSet = new Set(lesson.words);
+      words.forEach(w => existingSet.add(w));
+      lesson.words = [...existingSet];
+    } else {
+      library.lessons.push({ name: lessonName, words: [...new Set(words)] });
+    }
+
+    saveLibrary();
+    document.getElementById('manualWords').value = '';
+    spawnEmoji('✅');
+  }
+
+  // ==================== 词库展示 ====================
+  function renderLibrary() {
+    const container = document.getElementById('libraryContent');
+    const emptyMsg = document.getElementById('emptyLibrary');
+
+    if (library.lessons.length === 0) {
+      container.innerHTML = '';
+      emptyMsg.classList.remove('hidden');
+      return;
+    }
+    emptyMsg.classList.add('hidden');
+
+    container.innerHTML = library.lessons.map((lesson, li) => `
+      <div class="mb-4 animate-slide-up">
+        <div class="flex items-center justify-between mb-2">
+          <button onclick="toggleLesson(${li})"
+            class="lesson-tag px-4 py-2 rounded-full font-bold text-pink-600 hover:scale-105 transition flex items-center gap-2">
+            <span id="lessonArrow${li}" class="transition-transform">▶</span>
+            ${lesson.name}
+            <span class="text-pink-400 text-sm font-normal">(${lesson.words.length}词)</span>
+          </button>
+          <button onclick="deleteLesson(${li})"
+            class="text-pink-300 hover:text-red-400 transition text-sm px-2 py-1 rounded-lg hover:bg-red-50">
+            🗑️ 删除课文
+          </button>
+        </div>
+        <div id="lessonWords${li}" class="hidden flex flex-wrap gap-2 pl-4">
+          ${lesson.words.map((word, wi) => `
+            <span class="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-gradient-to-r from-pink-50 to-pink-100 text-pink-600 text-sm shadow-sm">
+              ${word}
+              <button onclick="deleteWord(${li},${wi})" class="text-pink-300 hover:text-red-400 ml-1 transition">✕</button>
+            </span>
+          `).join('')}
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function toggleLesson(idx) {
+    const el = document.getElementById(`lessonWords${idx}`);
+    const arrow = document.getElementById(`lessonArrow${idx}`);
+    el.classList.toggle('hidden');
+    arrow.style.transform = el.classList.contains('hidden') ? '' : 'rotate(90deg)';
+  }
+
+  function deleteLesson(idx) {
+    if (!confirm(`确定要删除「${library.lessons[idx].name}」的所有词语吗？`)) return;
+    library.lessons.splice(idx, 1);
+    saveLibrary();
+  }
+
+  function deleteWord(lessonIdx, wordIdx) {
+    library.lessons[lessonIdx].words.splice(wordIdx, 1);
+    if (library.lessons[lessonIdx].words.length === 0) {
+      library.lessons.splice(lessonIdx, 1);
+    }
+    saveLibrary();
+  }
+
+  // ==================== 默写模式 — 选课 ====================
+  function renderLessonSelection() {
+    const container = document.getElementById('lessonCheckboxes');
+    const noMsg = document.getElementById('noLessonsMsg');
+    const startBtn = document.getElementById('startBtn');
+
+    if (library.lessons.length === 0) {
+      container.innerHTML = '';
+      noMsg.classList.remove('hidden');
+      startBtn.classList.add('hidden');
+      return;
+    }
+    noMsg.classList.add('hidden');
+    startBtn.classList.remove('hidden');
+
+    container.innerHTML = library.lessons.map((lesson, i) => `
+      <label class="flex items-center gap-3 p-3 rounded-2xl hover:bg-pink-50/50 transition cursor-pointer">
+        <input type="checkbox" value="${i}" class="lesson-checkbox w-5 h-5 accent-pink-500 rounded"
+          onchange="updateStartBtn()" checked />
+        <span class="text-pink-600 font-bold">${lesson.name}</span>
+        <span class="text-pink-400 text-sm">(${lesson.words.length}词)</span>
+      </label>
+    `).join('');
+  }
+
+  function updateStartBtn() {
+    const checked = document.querySelectorAll('.lesson-checkbox:checked');
+    document.getElementById('startBtn').disabled = checked.length === 0;
+  }
+
+  // ==================== 默写模式 — 进行中 ====================
+  function startDictation() {
+    const checked = document.querySelectorAll('.lesson-checkbox:checked');
+    if (checked.length === 0) { alert('🌸 请至少选择一课！'); return; }
+
+    selectedLessonIndices = [...checked].map(cb => parseInt(cb.value));
+    currentWords = [];
+    selectedLessonIndices.forEach(i => {
+      library.lessons[i].words.forEach(w => {
+        currentWords.push({ word: w, lesson: library.lessons[i].name });
+      });
+    });
+
+    // 随机打乱
+    for (let i = currentWords.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [currentWords[i], currentWords[j]] = [currentWords[j], currentWords[i]];
+    }
+
+    currentIndex = 0;
+    document.getElementById('selectLessonView').classList.add('hidden');
+    document.getElementById('dictationView').classList.remove('hidden');
+    document.getElementById('completeView').classList.add('hidden');
+    showCurrentWord();
+  }
+
+  function showCurrentWord() {
+    if (currentIndex >= currentWords.length) {
+      finishDictation();
+      return;
+    }
+
+    const item = currentWords[currentIndex];
+    const pinyin = pinyinPro.pinyin(item.word, { toneType: 'symbol', type: 'string' });
+
+    // Update UI
+    document.getElementById('pinyinDisplay').textContent = pinyin;
+    document.getElementById('wordReveal').textContent = item.word;
+    document.getElementById('wordReveal').style.opacity = '0';
+    document.getElementById('revealBtn').classList.remove('hidden');
+    document.getElementById('progressText').textContent = `第 ${currentIndex + 1}/${currentWords.length} 个`;
+    document.getElementById('lessonLabel').textContent = item.lesson;
+    const pct = ((currentIndex) / currentWords.length) * 100;
+    document.getElementById('progressBar').style.width = pct + '%';
+
+    // Animate card
+    const card = document.getElementById('wordCard');
+    card.classList.remove('animate-pop');
+    void card.offsetWidth; // force reflow
+    card.classList.add('animate-pop');
+
+    // Speak
+    speakWord(item.word);
+  }
+
+  function revealWord() {
+    document.getElementById('wordReveal').style.opacity = '1';
+    document.getElementById('revealBtn').classList.add('hidden');
+  }
+
+  function speakWord(text) {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = 'zh-CN';
+      utter.rate = 0.8;
+      utter.pitch = 1.1;
+      // Try to pick a Chinese voice
+      const voices = window.speechSynthesis.getVoices();
+      const zhVoice = voices.find(v => v.lang.startsWith('zh'));
+      if (zhVoice) utter.voice = zhVoice;
+      window.speechSynthesis.speak(utter);
+    }
+  }
+
+  function replayWord() {
+    if (currentIndex < currentWords.length) {
+      speakWord(currentWords[currentIndex].word);
+    }
+  }
+
+  function nextWord() {
+    currentIndex++;
+    showCurrentWord();
+  }
+
+  function quitDictation() {
+    document.getElementById('dictationView').classList.add('hidden');
+    document.getElementById('selectLessonView').classList.remove('hidden');
+  }
+
+  function finishDictation() {
+    document.getElementById('dictationView').classList.add('hidden');
+    document.getElementById('completeView').classList.remove('hidden');
+    document.getElementById('totalCount').textContent = currentWords.length;
+    document.getElementById('progressBar').style.width = '100%';
+    launchConfetti();
+    spawnEmoji('🎉');
+    spawnEmoji('⭐');
+    spawnEmoji('🌟');
+  }
+
+  function restartDictation() {
+    document.getElementById('completeView').classList.add('hidden');
+    startDictation();
+  }
+
+  // ==================== 视觉效果 ====================
+  function spawnEmoji(emoji) {
+    const el = document.createElement('div');
+    el.className = 'floating-emoji';
+    el.textContent = emoji;
+    el.style.left = Math.random() * 80 + 10 + '%';
+    el.style.top = '60%';
+    el.style.transition = 'all 2s ease-out';
+    document.body.appendChild(el);
+    requestAnimationFrame(() => {
+      el.style.top = '-10%';
+      el.style.opacity = '0';
+    });
+    setTimeout(() => el.remove(), 2200);
+  }
+
+  function launchConfetti() {
+    const colors = ['#ff6ea8', '#ffb6d9', '#ff9fd4', '#ffd6e7', '#ff4088', '#ffa2cb', '#ffd700', '#ff69b4'];
+    for (let i = 0; i < 40; i++) {
+      setTimeout(() => {
+        const piece = document.createElement('div');
+        piece.className = 'confetti-piece';
+        piece.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+        piece.style.left = Math.random() * 100 + '%';
+        piece.style.top = '100%';
+        piece.style.width = (Math.random() * 8 + 5) + 'px';
+        piece.style.height = (Math.random() * 8 + 5) + 'px';
+        piece.style.borderRadius = Math.random() > 0.5 ? '50%' : '2px';
+        piece.style.transition = `all ${1 + Math.random() * 2}s ease-out`;
+        document.body.appendChild(piece);
+        requestAnimationFrame(() => {
+          piece.style.top = Math.random() * 50 + '%';
+          piece.style.left = Math.random() * 100 + '%';
+          piece.style.opacity = '0';
+          piece.style.transform = `rotate(${Math.random() * 720}deg)`;
+        });
+        setTimeout(() => piece.remove(), 3500);
+      }, i * 50);
+    }
+  }
+
+  // ==================== 语音初始化 ====================
+  // 在用户第一次交互后预加载语音列表
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.getVoices();
+    window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+  }
+
+  // ==================== 初始渲染 ====================
+  renderLibrary();
+</script>
+</body>
+</html>
