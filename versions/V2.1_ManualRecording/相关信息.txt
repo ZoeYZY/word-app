@@ -1,0 +1,15 @@
+https://supabase.com/dashboard/project/wonshabdlvjzdtiicsjf/advisors/security
+数据库：supabase
+账号：zoeyzy2026@gmail.com
+密码：通用版
+Project Name: yoyo-words
+
+密码：sb_publishable_KkLWWWQJ3Nc4SCJ_GI22Tw_zagGImcV
+
+默认的tab切到默写（done）
+
+增加打印默写的功能，把开启挑战后，在这个界面增加一个按钮，打印拼音默写。点击完之后生成一个pdf，pdf包含拼音，拼音下有方框空格默写。点击完后直接到记录错字的页面。（done）
+
+增加功能：1）如果没有对单词录音，可以使用在线语音包发音 2）丰富在线语音包的选择，可以有更多选项，也可以录制自己的语音包
+
+增加访客模式，可以访问zoeyangzy@hotmail.com这位用户的的词库。跟这位用户享有同样的权限。

@@ -784,48 +784,6 @@
       bottom: 0;
       border-left: 1px dashed #ccc;
     }
-
-    /* Voice Source Tabs */
-    .vs-tab {
-      flex: 1;
-      padding: .5rem .25rem;
-      border-radius: .75rem;
-      border: none;
-      background: transparent;
-      font-weight: 700;
-      font-size: .8rem;
-      cursor: pointer;
-      transition: all .2s ease;
-      color: #9CA3AF;
-      text-align: center;
-    }
-
-    .vs-tab.active {
-      background: #fff;
-      color: #F97316;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, .06);
-    }
-
-    .vs-tab:not(.active):hover {
-      color: #6B7280;
-    }
-
-    /* Voice Pack Card */
-    .voice-pack-card {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: #fff;
-      border: 1.5px solid #F3F4F6;
-      border-radius: 1rem;
-      padding: .75rem 1rem;
-      transition: all .2s ease;
-    }
-
-    .voice-pack-card:hover {
-      border-color: #FFE8D6;
-      box-shadow: 0 2px 8px rgba(249, 115, 22, .06);
-    }
   </style>
 </head>
 
@@ -867,14 +825,9 @@
             <h1 class="text-white text-2xl md:text-3xl font-extrabold tracking-tight">Yoyo 的默写本</h1>
             <p class="text-white/70 text-sm font-semibold">加油默写 不要爆炸哟 💥</p>
           </div>
-          <div class="flex items-center gap-2">
-            <button onclick="openSettings()"
-              class="text-white/60 hover:text-white text-xs font-bold bg-white/10 hover:bg-white/20 backdrop-blur-sm px-3 py-1.5 rounded-full transition-all"
-              title="设置">⚙️ 设置</button>
-            <button onclick="handleLogout()"
-              class="text-white/60 hover:text-white text-xs font-bold bg-white/10 hover:bg-white/20 backdrop-blur-sm px-3 py-1.5 rounded-full transition-all"
-              title="退出登录">👋 退出</button>
-          </div>
+          <button onclick="handleLogout()"
+            class="text-white/60 hover:text-white text-xs font-bold bg-white/10 hover:bg-white/20 backdrop-blur-sm px-3 py-1.5 rounded-full transition-all"
+            title="退出登录">👋 退出</button>
         </div>
       </div>
     </div>
@@ -1089,92 +1042,6 @@
       </section>
     </div>
   </div><!-- /mainApp -->
-
-  <!-- ===== Settings Modal ===== -->
-  <div id="settingsModal" class="hidden fixed inset-0 z-[2000] flex items-center justify-center p-4">
-    <div class="absolute inset-0 bg-black/40 backdrop-blur-sm" onclick="closeSettings()"></div>
-    <div class="app-card w-full max-w-md p-6 relative z-10 animate-pop" style="max-height:90vh;overflow-y:auto">
-      <div class="flex justify-between items-center mb-5">
-        <h2 class="text-xl font-extrabold text-gray-800 flex items-center gap-2">⚙️ 语音设置</h2>
-        <button onclick="closeSettings()" class="text-gray-400 hover:text-gray-600 text-lg">✕</button>
-      </div>
-
-      <!-- Voice Source Tabs -->
-      <div class="flex gap-1 mb-5 bg-gray-100 rounded-xl p-1">
-        <button id="vsTab_online" class="vs-tab active" onclick="switchVoiceSourceTab('online')">🌐 在线语音</button>
-        <button id="vsTab_custom" class="vs-tab" onclick="switchVoiceSourceTab('custom')">🎤 语音包</button>
-        <button id="vsTab_browser" class="vs-tab" onclick="switchVoiceSourceTab('browser')">🖥️ 浏览器</button>
-      </div>
-
-      <!-- Panel: Online TTS -->
-      <div id="vsPanel_online" class="space-y-4">
-        <div>
-          <label class="block text-xs font-bold text-gray-500 mb-2 ml-1">在线发音来源</label>
-          <select id="onlineProviderSelect" class="input-field text-sm">
-            <option value="youdao">📗 有道词典（推荐，发音清晰）</option>
-            <option value="baidu">📘 百度翻译（语速可调）</option>
-          </select>
-        </div>
-        <div class="bg-brand-50 rounded-xl p-3">
-          <p class="text-xs text-gray-500">💡 在线语音无需安装，自动为没有录音的词语发音。不同来源的发音风格略有不同，可切换试听选择喜欢的。</p>
-        </div>
-      </div>
-
-      <!-- Panel: Custom Voice Packs -->
-      <div id="vsPanel_custom" class="hidden space-y-4">
-        <div>
-          <label class="block text-xs font-bold text-gray-500 mb-2 ml-1">当前使用的语音包</label>
-          <select id="activePackSelect" class="input-field text-sm"></select>
-        </div>
-        <div>
-          <div class="flex items-center justify-between mb-2">
-            <label class="text-xs font-bold text-gray-500 ml-1">我的语音包</label>
-            <button onclick="createVoicePack()" class="text-brand-500 text-xs font-bold hover:underline">➕
-              新建语音包</button>
-          </div>
-          <div id="voicePackList" class="space-y-2"></div>
-        </div>
-        <div class="bg-brand-50 rounded-xl p-3">
-          <p class="text-xs text-gray-500">💡 语音包可以录制自己/家人的声音来为词语发音。点击"录音"进入批量录制模式，为词库中的词语逐个录音。</p>
-        </div>
-      </div>
-
-      <!-- Panel: Browser TTS -->
-      <div id="vsPanel_browser" class="hidden space-y-4">
-        <div>
-          <label class="block text-xs font-bold text-gray-500 mb-2 ml-1">浏览器语音引擎</label>
-          <select id="voiceSelect" class="input-field text-sm">
-            <option value="">加载中...</option>
-          </select>
-        </div>
-        <div>
-          <div class="flex justify-between mb-1 ml-1">
-            <label class="text-xs font-bold text-gray-500">语速 (Rate)</label>
-            <span id="rateValue" class="text-xs font-bold text-brand-500">0.8</span>
-          </div>
-          <input type="range" id="voiceRate" min="0.5" max="1.5" step="0.1" value="0.8"
-            class="w-full accent-brand-500" />
-        </div>
-        <div>
-          <div class="flex justify-between mb-1 ml-1">
-            <label class="text-xs font-bold text-gray-500">音调 (Pitch)</label>
-            <span id="pitchValue" class="text-xs font-bold text-brand-500">1.1</span>
-          </div>
-          <input type="range" id="voicePitch" min="0.5" max="2" step="0.1" value="1.1"
-            class="w-full accent-brand-500" />
-        </div>
-        <div class="bg-brand-50 rounded-xl p-3">
-          <p class="text-xs text-gray-500">💡 浏览器语音依赖操作系统已安装的中文语音引擎，不同设备可选的语音可能不同。</p>
-        </div>
-      </div>
-
-      <!-- Action Buttons -->
-      <div class="pt-4 mt-4 border-t border-gray-100 flex gap-3">
-        <button onclick="testVoice()" class="btn-secondary flex-1 py-2 text-sm">🧪 测试声音</button>
-        <button onclick="saveSettings()" class="btn-primary flex-1 py-2 text-sm">💾 保存设置</button>
-      </div>
-    </div>
-  </div>
 
   <script src="words.js"></script>
   <script src="app.js"></script>
