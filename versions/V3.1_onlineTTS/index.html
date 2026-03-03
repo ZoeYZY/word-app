@@ -826,25 +826,6 @@
       border-color: #FFE8D6;
       box-shadow: 0 2px 8px rgba(249, 115, 22, .06);
     }
-
-    /* Dictation Records */
-    .record-wrong-tag {
-      display: inline-block;
-      background: #FEF2F2;
-      color: #EF4444;
-      font-size: .8rem;
-      font-weight: 700;
-      padding: .15rem .55rem;
-      border-radius: .5rem;
-      border: 1px solid #FECACA;
-    }
-
-    .record-wrong-section {
-      background: #FFFBEB;
-      border: 1px solid #FEF3C7;
-      border-radius: .75rem;
-      padding: .6rem .8rem;
-    }
   </style>
 </head>
 
@@ -905,7 +886,6 @@
           <button id="tabLibrary" onclick="switchTab('library')" class="tab-item">📚 词库</button>
           <button id="tabDictation" onclick="switchTab('dictation')" class="tab-item active">✏️ 默写</button>
           <button id="tabHistory" onclick="switchTab('history')" class="tab-item">📊 历史</button>
-          <button id="tabRecords" onclick="switchTab('records')" class="tab-item">📋 记录</button>
         </div>
       </div>
 
@@ -1105,15 +1085,6 @@
         <div id="emptyHistory" class="app-card p-14 text-center">
           <div class="text-5xl mb-3 opacity-30">🎉</div>
           <p class="text-gray-400 text-sm">还没有错字记录，继续加油！</p>
-        </div>
-      </section>
-
-      <!-- ===== 默写记录 ===== -->
-      <section id="pageRecords" class="hidden space-y-4">
-        <div id="recordsContent" class="space-y-4"></div>
-        <div id="emptyRecords" class="app-card p-14 text-center">
-          <div class="text-5xl mb-3 opacity-30">📋</div>
-          <p class="text-gray-400 text-sm">还没有默写记录，去完成一次默写吧！</p>
         </div>
       </section>
     </div>

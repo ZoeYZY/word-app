@@ -114,41 +114,12 @@ async function recordCharMistake(ch, fromWord, lessonName) {
     }
 }
 
-// ==================== Dictation Records Data Layer ====================
-async function dbSaveDictationRecord(record) {
-    const { error } = await sb.from('dictation_records').insert({ ...record, user_id: currentUserId });
-    if (error) {
-        console.warn('dbSaveDictationRecord (Supabase):', error);
-        // Fallback: save to localStorage
-        const key = 'yoyo_dictation_records_' + currentUserId;
-        const saved = JSON.parse(localStorage.getItem(key) || '[]');
-        saved.push(record);
-        localStorage.setItem(key, JSON.stringify(saved));
-    }
-}
-async function dbGetDictationRecords() {
-    const { data, error } = await sb.from('dictation_records').select('*').eq('user_id', currentUserId).order('datetime', { ascending: false });
-    if (error) {
-        console.warn('dbGetDictationRecords (Supabase):', error);
-        // Fallback: read from localStorage
-        const key = 'yoyo_dictation_records_' + currentUserId;
-        const saved = JSON.parse(localStorage.getItem(key) || '[]');
-        return saved.sort((a, b) => b.datetime.localeCompare(a.datetime));
-    }
-    return data || [];
-}
-async function dbDeleteDictationRecord(id) {
-    const { error } = await sb.from('dictation_records').delete().eq('id', id).eq('user_id', currentUserId);
-    if (error) console.warn('dbDeleteDictationRecord:', error);
-}
-
 // ==================== State ====================
 let lessons = [], currentWords = [], currentIndex = 0;
 let pendingUnits = [];
 let selectedChars = new Set(), selectedCharMeta = {};
 let dictationMode = 'all';
 let dragData = null;
-let dictationLessons = []; // track which lesson names are covered in current dictation
 let activeRecorder = null;
 let audioCache = {}; // { word: base64DataUrl }
 
@@ -708,11 +679,9 @@ function switchTab(tab) {
     document.getElementById('pageLibrary').classList.toggle('hidden', tab !== 'library');
     document.getElementById('pageDictation').classList.toggle('hidden', tab !== 'dictation');
     document.getElementById('pageHistory').classList.toggle('hidden', tab !== 'history');
-    document.getElementById('pageRecords').classList.toggle('hidden', tab !== 'records');
     document.getElementById('tabLibrary').classList.toggle('active', tab === 'library');
     document.getElementById('tabDictation').classList.toggle('active', tab === 'dictation');
     document.getElementById('tabHistory').classList.toggle('active', tab === 'history');
-    document.getElementById('tabRecords').classList.toggle('active', tab === 'records');
     if (tab === 'library') renderLibrary();
     if (tab === 'dictation') {
         renderLessonSelection();
@@ -721,7 +690,6 @@ function switchTab(tab) {
         document.getElementById('completeView').classList.add('hidden');
     }
     if (tab === 'history') renderHistory();
-    if (tab === 'records') renderRecords();
 }
 
 // ==================== Common Text → Units Parser ====================
@@ -1303,11 +1271,9 @@ async function startDictation() {
     const checked = document.querySelectorAll('.lesson-checkbox:checked');
     if (!checked.length) return;
     let allWords = [];
-    dictationLessons = [];
     checked.forEach(cb => {
         const lesson = lessons[parseInt(cb.value)];
         lesson.words.forEach(w => allWords.push({ word: w, lesson: lesson.name }));
-        if (!dictationLessons.includes(lesson.name)) dictationLessons.push(lesson.name);
     });
     const allMistakes = await dbGetMistakes();
     const charSet = new Set(allMistakes.map(m => m.char));
@@ -1436,24 +1402,9 @@ async function submitMistakes() {
     const uniq = {};
     for (const key of selectedChars) { const m = selectedCharMeta[key]; if (m && !uniq[m.char]) uniq[m.char] = m; }
     for (const k in uniq) { const m = uniq[k]; await recordCharMistake(m.char, m.word, m.lesson); }
-    // Collect wrong words (unique) from selected chars
-    const wrongWordsSet = new Set();
-    for (const key of selectedChars) { const m = selectedCharMeta[key]; if (m) wrongWordsSet.add(m.word); }
-    await saveDictationRecord([...wrongWordsSet]);
     showSuccessScreen(Object.keys(uniq).length);
 }
-function skipMistakes() { saveDictationRecord([]); showSuccessScreen(0); }
-
-async function saveDictationRecord(wrongWords) {
-    const now = new Date();
-    const pad = n => String(n).padStart(2, '0');
-    const datetime = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    const totalWords = currentWords.length;
-    const correctCount = totalWords - wrongWords.length;
-    const lessonsCovered = dictationLessons.length ? dictationLessons : [...new Set(currentWords.map(w => w.lesson))];
-    const record = { datetime, total_words: totalWords, correct_count: correctCount, wrong_words: wrongWords, lessons_covered: lessonsCovered };
-    await dbSaveDictationRecord(record);
-}
+function skipMistakes() { showSuccessScreen(0); }
 
 function showSuccessScreen(n) {
     document.getElementById('markMistakesStep').classList.add('hidden');
@@ -1468,45 +1419,6 @@ function restartDictation() {
     document.getElementById('completeView').classList.add('hidden');
     document.getElementById('selectLessonView').classList.remove('hidden');
     renderLessonSelection();
-}
-
-// ==================== Dictation Records ====================
-async function renderRecords() {
-    const container = document.getElementById('recordsContent');
-    const emptyEl = document.getElementById('emptyRecords');
-    const records = await dbGetDictationRecords();
-    if (!records.length) {
-        container.innerHTML = '';
-        emptyEl.classList.remove('hidden');
-        return;
-    }
-    emptyEl.classList.add('hidden');
-    container.innerHTML = records.map((r, idx) => {
-        const wrongCount = (r.wrong_words || []).length;
-        const total = r.total_words || 0;
-        const correct = r.correct_count || 0;
-        const pct = total > 0 ? Math.round(correct / total * 100) : 100;
-        const pctColor = pct === 100 ? '#16A34A' : pct >= 80 ? '#F97316' : '#EF4444';
-        const pctEmoji = pct === 100 ? '🌟' : pct >= 80 ? '💪' : '📝';
-        const lessonsStr = (r.lessons_covered || []).join('、');
-        const wrongStr = (r.wrong_words || []).map(w => `<span class="record-wrong-tag">${w}</span>`).join(' ');
-        return `<div class="app-card p-5 animate-slide-up" style="animation-delay:${idx * 0.03}s">
-            <div class="flex items-start justify-between gap-3 mb-3">
-                <div class="flex items-center gap-2">
-                    <span class="text-2xl">${pctEmoji}</span>
-                    <div>
-                        <p class="font-extrabold text-gray-800">${r.datetime || ''}</p>
-                        <p class="text-xs text-gray-400 mt-0.5">${lessonsStr || '未知课文'}</p>
-                    </div>
-                </div>
-                <div class="text-right flex-shrink-0">
-                    <p class="text-xl font-extrabold" style="color:${pctColor}">${pct}%</p>
-                    <p class="text-xs text-gray-400">${correct}/${total} 正确</p>
-                </div>
-            </div>
-            ${wrongCount > 0 ? `<div class="record-wrong-section"><span class="text-xs text-gray-400 font-bold">❌ 错误词语：</span><div class="flex flex-wrap gap-1.5 mt-1">${wrongStr}</div></div>` : '<p class="text-sm text-green-500 font-bold">✅ 全部正确！太棒了！</p>'}
-        </div>`;
-    }).join('');
 }
 
 // ==================== History ====================

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Seed Data</title>
+</head>
+
+<body>
+    <h2>📦 初始化词库数据到 Supabase...</h2>
+    <pre id="log"></pre>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+    <script src="words.js"></script>
+    <script>
+        const sb = supabase.createClient('https://wonshabdlvjzdtiicsjf.supabase.co', 'sb_publishable_KkLWWWQJ3Nc4SCJ_GI22Tw_zagGImcV');
+        const log = document.getElementById('log');
+        function print(msg) { log.textContent += msg + '\n'; }
+
+        async function seed() {
+            print('正在检查数据库...');
+            const { data: existing, error: checkErr } = await sb.from('lessons').select('id').limit(1);
+            if (checkErr) { print('❌ 连接失败: ' + checkErr.message); return; }
+            if (existing && existing.length > 0) {
+                print('⚠️ 数据库已有数据，跳过。如需重新导入请先在 Supabase Table Editor 清空 lessons 表。');
+                return;
+            }
+            let total = 0;
+            for (const u of WORDS_DATA) {
+                for (const l of u.lessons) {
+                    const { error } = await sb.from('lessons').insert({ name: l.name, unit: u.unit, words: l.words });
+                    if (error) { print('❌ ' + l.name + ': ' + error.message); }
+                    else { print('✅ ' + l.name + ' (' + l.words.length + ' 词)'); total++; }
+                }
+            }
+            print('\n🎉 完成！共导入 ' + total + ' 课');
+        }
+        seed();
+    </script>
+</body>
+
+</html>
