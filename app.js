@@ -60,6 +60,8 @@ async function showMainApp() {
     document.getElementById('authPage').classList.add('hidden');
     document.getElementById('mainApp').classList.remove('hidden');
     lessons = await dbGetLessons();
+    // Migrate any localStorage dictation records to Supabase
+    await migrateLocalDictationRecords();
     // Auto-seed from words.js if user's DB is empty
     if (!lessons.length && typeof WORDS_DATA !== 'undefined' && WORDS_DATA.length) {
         for (const u of WORDS_DATA) {
@@ -118,7 +120,8 @@ async function recordCharMistake(ch, fromWord, lessonName) {
 async function dbSaveDictationRecord(record) {
     const { error } = await sb.from('dictation_records').insert({ ...record, user_id: currentUserId });
     if (error) {
-        console.warn('dbSaveDictationRecord (Supabase):', error);
+        console.error('dbSaveDictationRecord FAILED - falling back to localStorage.', error.message,
+            '\n⚠️ 请确保 Supabase 中已创建 dictation_records 表并配置了 RLS 策略。');
         // Fallback: save to localStorage
         const key = 'yoyo_dictation_records_' + currentUserId;
         const saved = JSON.parse(localStorage.getItem(key) || '[]');
@@ -140,6 +143,29 @@ async function dbGetDictationRecords() {
 async function dbDeleteDictationRecord(id) {
     const { error } = await sb.from('dictation_records').delete().eq('id', id).eq('user_id', currentUserId);
     if (error) console.warn('dbDeleteDictationRecord:', error);
+}
+
+async function migrateLocalDictationRecords() {
+    const key = 'yoyo_dictation_records_' + currentUserId;
+    const raw = localStorage.getItem(key);
+    if (!raw) return;
+    try {
+        const records = JSON.parse(raw);
+        if (!records.length) { localStorage.removeItem(key); return; }
+        console.log(`Migrating ${records.length} local dictation records to Supabase...`);
+        for (const record of records) {
+            const { error } = await sb.from('dictation_records')
+                .insert({ ...record, user_id: currentUserId });
+            if (error) {
+                console.warn('Migration failed, keeping localStorage:', error.message);
+                return; // 表不存在则保留 localStorage 数据
+            }
+        }
+        localStorage.removeItem(key);
+        console.log('Migration complete, localStorage cleared.');
+    } catch (e) {
+        console.warn('Migration parse error:', e);
+    }
 }
 
 // ==================== State ====================
@@ -1402,7 +1428,9 @@ function quitDictation() {
 // ==================== Auth & Navigation ====================
 
 // ==================== Finish & Char-level Mistakes ====================
+let _submittingMistakes = false;
 function finishDictation() {
+    _submittingMistakes = false; // reset guard for new round
     document.getElementById('dictationView').classList.add('hidden');
     document.getElementById('completeView').classList.remove('hidden');
     document.getElementById('markMistakesStep').classList.remove('hidden');
@@ -1433,6 +1461,8 @@ function finishDictation() {
 }
 
 async function submitMistakes() {
+    if (_submittingMistakes) return; // prevent double-submit
+    _submittingMistakes = true;
     const uniq = {};
     for (const key of selectedChars) { const m = selectedCharMeta[key]; if (m && !uniq[m.char]) uniq[m.char] = m; }
     for (const k in uniq) { const m = uniq[k]; await recordCharMistake(m.char, m.word, m.lesson); }
@@ -1442,7 +1472,7 @@ async function submitMistakes() {
     await saveDictationRecord([...wrongWordsSet]);
     showSuccessScreen(Object.keys(uniq).length);
 }
-function skipMistakes() { saveDictationRecord([]); showSuccessScreen(0); }
+function skipMistakes() { if (_submittingMistakes) return; _submittingMistakes = true; saveDictationRecord([]); showSuccessScreen(0); }
 
 async function saveDictationRecord(wrongWords) {
     const now = new Date();

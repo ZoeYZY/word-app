@@ -23,3 +23,13 @@ todo 0303
 词库增加一个维度，在单元上增加 课本 
 
 试着描述更完整的需求尝试写app
+
+域名:
+yoyowordapp.dpdns.org
+
+用https://dash.domain.digitalplat.org/申请的免费域名
+用https://dash.cloudflare.com/做的mapping
+
+Host:
+1) Vercel
+2) https://edgeone.ai/
