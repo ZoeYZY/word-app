@@ -52,6 +52,7 @@ async function handleAuth() {
 async function handleLogout() {
     await sb.auth.signOut();
     currentUserId = null;
+    audioCache = {};
     document.getElementById('authPage').classList.remove('hidden');
     document.getElementById('mainApp').classList.add('hidden');
 }
@@ -59,6 +60,8 @@ async function handleLogout() {
 async function showMainApp() {
     document.getElementById('authPage').classList.add('hidden');
     document.getElementById('mainApp').classList.remove('hidden');
+    // Load current user's audio recordings from IndexedDB
+    await AudioDB.loadAll();
     lessons = await dbGetLessons();
     // Migrate any localStorage dictation records to Supabase
     await migrateLocalDictationRecords();
@@ -153,16 +156,25 @@ async function migrateLocalDictationRecords() {
         const records = JSON.parse(raw);
         if (!records.length) { localStorage.removeItem(key); return; }
         console.log(`Migrating ${records.length} local dictation records to Supabase...`);
+        const migrated = [];
         for (const record of records) {
             const { error } = await sb.from('dictation_records')
                 .insert({ ...record, user_id: currentUserId });
             if (error) {
-                console.warn('Migration failed, keeping localStorage:', error.message);
-                return; // 表不存在则保留 localStorage 数据
+                console.warn('Skipping record due to error:', error.message);
+            } else {
+                migrated.push(record);
             }
         }
-        localStorage.removeItem(key);
-        console.log('Migration complete, localStorage cleared.');
+        // Only remove records that were successfully migrated
+        const remaining = records.filter(r => !migrated.includes(r));
+        if (remaining.length === 0) {
+            localStorage.removeItem(key);
+            console.log('Migration complete, localStorage cleared.');
+        } else {
+            localStorage.setItem(key, JSON.stringify(remaining));
+            console.log(`${remaining.length} records remaining in localStorage (failed to migrate).`);
+        }
     } catch (e) {
         console.warn('Migration parse error:', e);
     }
@@ -286,7 +298,8 @@ function testVoice() {
     } else if (src === 'custom') {
         // play a recorded word from active pack, or fallback
         const packId = appSettings.activePackId;
-        const testWord = Object.keys(audioCache).find(k => k.startsWith(`pack_${packId}::`));
+        const uid = currentUserId || 'anon';
+        const testWord = Object.keys(audioCache).find(k => k.startsWith(uid + '::pack_' + packId + '::'));
         if (testWord) playAudioDataUrl(audioCache[testWord]);
         else { alert('当前语音包没有录音，请先录制一些词语'); }
     }
@@ -326,20 +339,8 @@ function createVoicePack() {
 async function deleteVoicePack(packId) {
     if (packId === 'default') { alert('默认录音不能删除'); return; }
     if (!confirm('确定删除这个语音包及其所有录音吗？')) return;
-    // Delete all recordings in this pack
-    const db = await AudioDB.open();
-    const tx = db.transaction('audio', 'readwrite');
-    const store = tx.objectStore('audio');
-    const req = store.getAll();
-    req.onsuccess = () => {
-        const all = req.result || [];
-        all.forEach(r => {
-            if (r.word && r.word.startsWith(`pack_${packId}::`)) {
-                store.delete(r.word);
-                delete audioCache[r.word];
-            }
-        });
-    };
+    // Delete all recordings in this pack (scoped to current user via AudioDB.deletePack)
+    await AudioDB.deletePack(packId);
     // Remove from packs list
     appSettings.voicePacks = appSettings.voicePacks.filter(p => p.id !== packId);
     if (appSettings.activePackId === packId) appSettings.activePackId = 'default';
@@ -355,7 +356,8 @@ function renderVoicePackList() {
 
     // Render pack cards
     container.innerHTML = appSettings.voicePacks.map(p => {
-        const count = Object.keys(audioCache).filter(k => k.startsWith(`pack_${p.id}::`)).length;
+        const uid = currentUserId || 'anon';
+        const count = Object.keys(audioCache).filter(k => k.startsWith(uid + '::pack_' + p.id + '::')).length;
         return `<div class="voice-pack-card">
             <div class="flex items-center gap-2 flex-1">
                 <span class="text-lg">${p.id === appSettings.activePackId ? '🔊' : '🎤'}</span>
@@ -407,20 +409,43 @@ document.addEventListener('input', (e) => {
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
 // ==================== IndexedDB Audio Storage ====================
+// Schema v2: userId prefix in key for multi-user isolation.
+// key = userId::pack_<packId>::word  (packId optional)
 const AudioDB = {
     _db: null,
     async open() {
         if (this._db) return this._db;
         return new Promise((resolve, reject) => {
-            const req = indexedDB.open('WordAppAudio', 1);
-            req.onupgradeneeded = () => req.result.createObjectStore('audio', { keyPath: 'word' });
+            const req = indexedDB.open('WordAppAudio', 2);
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (e.oldVersion < 1) {
+                    db.createObjectStore('audio', { keyPath: 'word' });
+                }
+                // v2+: old records without userId prefix are cleaned up on loadAll
+            };
             req.onsuccess = () => { this._db = req.result; resolve(this._db); };
             req.onerror = () => reject(req.error);
         });
     },
+    _makeKey(word, packId) {
+        const uid = currentUserId || 'anon';
+        return packId ? uid + '::pack_' + packId + '::' + word : uid + '::' + word;
+    },
+    // Check if audio exists for a word (optionally for a specific pack)
+    hasAudio(word, packId) {
+        const key = this._makeKey(word, packId);
+        return !!audioCache[key];
+    },
+    // Get audio data URL for a word (optionally for a specific pack)
+    getAudio(word, packId) {
+        const key = this._makeKey(word, packId);
+        return audioCache[key] || null;
+    },
     async save(word, dataUrl, packId) {
+        if (!currentUserId) { console.warn('AudioDB.save: no currentUserId, skipping'); return; }
         const db = await this.open();
-        const key = packId ? `pack_${packId}::${word}` : word;
+        const key = this._makeKey(word, packId);
         return new Promise((resolve, reject) => {
             const tx = db.transaction('audio', 'readwrite');
             tx.objectStore('audio').put({ word: key, dataUrl, ts: Date.now() });
@@ -429,19 +454,19 @@ const AudioDB = {
         });
     },
     async get(word, packId) {
-        const key = packId ? `pack_${packId}::${word}` : word;
+        const key = this._makeKey(word, packId);
         if (audioCache[key]) return audioCache[key];
         const db = await this.open();
         return new Promise((resolve, reject) => {
             const tx = db.transaction('audio', 'readonly');
             const req = tx.objectStore('audio').get(key);
             req.onsuccess = () => { const r = req.result; if (r) audioCache[key] = r.dataUrl; resolve(r ? r.dataUrl : null); };
-            req.onerror = () => reject(req.error);
+            req.onerror = () => reject(tx.error);
         });
     },
     async delete(word, packId) {
         const db = await this.open();
-        const key = packId ? `pack_${packId}::${word}` : word;
+        const key = this._makeKey(word, packId);
         return new Promise((resolve, reject) => {
             const tx = db.transaction('audio', 'readwrite');
             tx.objectStore('audio').delete(key);
@@ -450,11 +475,60 @@ const AudioDB = {
         });
     },
     async loadAll() {
+        if (!currentUserId) return;
         const db = await this.open();
+        // Prune cache: keep only entries belonging to current user
+        for (const k of Object.keys(audioCache)) {
+            if (!k.startsWith(currentUserId + '::')) delete audioCache[k];
+        }
         return new Promise((resolve, reject) => {
             const tx = db.transaction('audio', 'readonly');
             const req = tx.objectStore('audio').getAll();
-            req.onsuccess = () => { (req.result || []).forEach(r => { audioCache[r.word] = r.dataUrl; }); resolve(); };
+            req.onsuccess = async () => {
+                const results = req.result || [];
+                // First pass: adopt records with current user's prefix
+                results.forEach(r => {
+                    if (r.word && r.word.startsWith(currentUserId + '::')) {
+                        audioCache[r.word] = r.dataUrl;
+                    }
+                });
+                // Second pass: migrate old records (no userId prefix) to new format
+                const oldRecords = results.filter(r => r.word && !r.word.includes('::'));
+                if (oldRecords.length > 0) {
+                    console.log('Migrating ' + oldRecords.length + ' legacy audio recordings to user-isolated format...');
+                    const wtx = db.transaction('audio', 'readwrite');
+                    for (const r of oldRecords) {
+                        // Extract word from old key (e.g., '词语' -> extract '词语')
+                        const oldWord = r.word;
+                        const newKey = currentUserId + '::' + oldWord;
+                        wtx.objectStore('audio').put({ word: newKey, dataUrl: r.dataUrl, ts: r.ts || Date.now() });
+                        audioCache[newKey] = r.dataUrl;
+                        // Delete old record
+                        wtx.objectStore('audio').delete(oldWord);
+                        delete audioCache[oldWord];
+                    }
+                }
+                resolve();
+            };
+            req.onerror = () => reject(req.error);
+        });
+    },
+    // Delete all audio records for a specific pack, scoped to current user only
+    async deletePack(packId) {
+        const db = await this.open();
+        const prefix = currentUserId + '::pack_' + packId + '::';
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('audio', 'readwrite');
+            const req = tx.objectStore('audio').getAll();
+            req.onsuccess = () => {
+                (req.result || []).forEach(r => {
+                    if (r.word && r.word.startsWith(prefix)) {
+                        tx.objectStore('audio').delete(r.word);
+                        delete audioCache[r.word];
+                    }
+                });
+                resolve();
+            };
             req.onerror = () => reject(req.error);
         });
     }
@@ -561,9 +635,7 @@ function showBatchRecWord() {
     if (index >= lesson.words.length) { closeBatchRec(); spawnEmoji('🎉'); return; }
     const word = lesson.words[index];
     const pinyin = pinyinPro.pinyin(word, { toneType: 'symbol', type: 'string' });
-    // Check audio: if recording for a pack, check pack key; otherwise legacy key
-    const audioKey = packId ? `pack_${packId}::${word}` : word;
-    const hasAudio = !!audioCache[audioKey];
+    const hasAudio = AudioDB.hasAudio(word, packId || undefined);
 
     let overlay = batchRecState.overlay;
     if (!overlay) {
@@ -613,7 +685,7 @@ function showBatchRecWord() {
         }
     };
     if (document.getElementById('batchPlayBtn')) {
-        document.getElementById('batchPlayBtn').onclick = () => { if (audioCache[audioKey]) playAudioDataUrl(audioCache[audioKey]); };
+        document.getElementById('batchPlayBtn').onclick = () => { const d = AudioDB.getAudio(word, packId || undefined); if (d) playAudioDataUrl(d); };
     }
     if (document.getElementById('batchDelBtn')) {
         document.getElementById('batchDelBtn').onclick = async () => { await AudioDB.delete(word, packId || undefined); showBatchRecWord(); };
@@ -1062,18 +1134,27 @@ function rebuildWordsDiv(wordsDiv, lesson, mm) {
         const tag = document.createElement('div'); tag.className = 'word-tag text-sm drag-word'; tag.draggable = true;
         const sp = document.createElement('span'); sp.textContent = word; tag.appendChild(sp);
         [...word].filter(c => mm[c]).forEach(c => { const b = document.createElement('span'); b.className = 'err-badge'; b.textContent = `${c}错${mm[c]}`; tag.appendChild(b); });
-        // Mic/speaker button
+        // Mic/speaker button: show 🔊 if active pack or legacy has recording
         const mic = document.createElement('button');
-        mic.className = 'rec-btn ' + (audioCache[word] ? 'rec-btn-has' : 'rec-btn-mic');
-        mic.textContent = audioCache[word] ? '🔊' : '🎤';
+        const hasPack = AudioDB.hasAudio(word, appSettings.activePackId);
+        const hasLegacy = AudioDB.hasAudio(word);
+        const hasRec = hasPack || hasLegacy;
+        mic.className = 'rec-btn ' + (hasRec ? 'rec-btn-has' : 'rec-btn-mic');
+        mic.textContent = hasRec ? '🔊' : '🎤';
         mic.onclick = (e) => { e.stopPropagation(); playOrRecordWord(word, mic); };
         mic.ondblclick = (e) => { e.stopPropagation(); startRecordingFromLibrary(word, mic); };
-        mic.title = audioCache[word] ? '点按播放录音 · 双击重录' : '点按试听在线语音 · 双击录音';
-        // Right-click to delete recording
+        mic.title = hasRec ? '点按播放录音 · 双击重录' : '点按试听在线语音 · 双击录音';
+        // Right-click to delete recording (prefer active pack, then legacy)
         mic.oncontextmenu = async (e) => {
             e.preventDefault(); e.stopPropagation();
-            if (audioCache[word]) {
+            if (hasPack) {
+                await AudioDB.delete(word, appSettings.activePackId);
+            } else if (hasLegacy) {
                 await AudioDB.delete(word);
+            }
+            if (AudioDB.hasAudio(word, appSettings.activePackId) || AudioDB.hasAudio(word)) {
+                mic.className = 'rec-btn rec-btn-has';
+            } else {
                 mic.className = 'rec-btn rec-btn-mic';
                 mic.textContent = '🎤';
                 mic.title = '点击录音';
@@ -1219,7 +1300,7 @@ async function renderLibrary() {
             recBtn.className = 'btn-secondary'; recBtn.style.cssText = 'font-size:.75rem;padding:.35rem .75rem;border-radius:.5rem;white-space:nowrap';
             recBtn.textContent = '🎙️ 批量录音';
             recBtn.onclick = () => startBatchRecording(lesson);
-            const recCount = lesson.words.filter(w => audioCache[w]).length;
+            const recCount = lesson.words.filter(w => AudioDB.hasAudio(w, appSettings.activePackId)).length;
             const recInfo = document.createElement('span');
             recInfo.className = 'text-xs text-gray-400 font-bold';
             recInfo.textContent = recCount > 0 ? `已录 ${recCount}/${lesson.words.length}` : '';

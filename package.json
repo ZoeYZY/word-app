@@ -6,7 +6,10 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "vitest": "^3.0.0",
-    "jsdom": "^25.0.0"
+    "jsdom": "^25.0.0",
+    "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.101.1"
   }
 }
