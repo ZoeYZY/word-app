@@ -1,7 +1,11 @@
 // ==================== Supabase Client ====================
 const SUPABASE_URL = 'https://wonshabdlvjzdtiicsjf.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_KkLWWWQJ3Nc4SCJ_GI22Tw_zagGImcV';
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+if (typeof supabase === 'undefined') {
+    console.error('Supabase SDK 未加载！请检查网络连接。');
+} else {
+    var sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+}
 
 // ==================== Auth ====================
 let currentUserId = null;
@@ -22,6 +26,11 @@ async function handleAuth() {
     errEl.classList.add('hidden');
     if (!email || !password) { errEl.textContent = '请填写邮箱和密码'; errEl.classList.remove('hidden'); return; }
     if (password.length < 6) { errEl.textContent = '密码至少6位'; errEl.classList.remove('hidden'); return; }
+    if (typeof sb === 'undefined') {
+        errEl.textContent = '登录服务未加载（网络可能受限），请检查网络后刷新重试';
+        errEl.classList.remove('hidden');
+        return;
+    }
 
     const btn = document.getElementById('authSubmitBtn');
     btn.disabled = true; btn.textContent = '⏳ 请稍候...';
@@ -69,6 +78,9 @@ async function showMainApp() {
         }
         lessons = await dbGetLessons();
     }
+    // Load local IndexedDB recordings, then sync cloud recordings
+    await AudioDB.loadAll();
+    await AudioDB.loadAllFromCloud();
     // Default tab
     switchTab('library');
 }
@@ -393,44 +405,127 @@ const AudioDB = {
         });
     },
     async save(word, dataUrl, packId) {
-        const db = await this.open();
         const key = packId ? `pack_${packId}::${word}` : word;
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction('audio', 'readwrite');
-            tx.objectStore('audio').put({ word: key, dataUrl, ts: Date.now() });
-            tx.oncomplete = () => { audioCache[key] = dataUrl; resolve(); };
-            tx.onerror = () => reject(tx.error);
-        });
+        // 1. Save to local IndexedDB (always)
+        try {
+            const db = await this.open();
+            await new Promise((resolve, reject) => {
+                const tx = db.transaction('audio', 'readwrite');
+                tx.objectStore('audio').put({ word: key, dataUrl, ts: Date.now() });
+                tx.oncomplete = () => { audioCache[key] = dataUrl; resolve(); };
+                tx.onerror = () => reject(tx.error);
+            });
+        } catch (e) { console.warn('IndexedDB save failed:', e); }
+
+        // 2. Upload to Supabase Storage (if logged in)
+        if (!currentUserId || typeof sb === 'undefined') return;
+        const storagePath = `${currentUserId}/${packId || 'default'}/${encodeURIComponent(word)}.webm`;
+        try {
+            // Convert dataUrl to Blob
+            const resp = await fetch(dataUrl);
+            const blob = await resp.blob();
+            const { error: uploadError } = await sb.storage
+                .from('voice-recordings')
+                .upload(storagePath, blob, { contentType: 'audio/webm', upsert: true });
+            if (uploadError) throw uploadError;
+            // Save metadata to DB
+            const { data: urlData } = sb.storage.from('voice-recordings').getPublicUrl(storagePath);
+            await sb.from('voice_recordings').upsert({
+                user_id: currentUserId,
+                word,
+                pack_id: packId || 'default',
+                storage_path: storagePath,
+                storage_url: urlData?.publicUrl || '',
+            }, { onConflict: 'user_id,word,pack_id' });
+        } catch (e) {
+            console.warn('Cloud audio save failed (saved locally):', e);
+        }
     },
     async get(word, packId) {
         const key = packId ? `pack_${packId}::${word}` : word;
         if (audioCache[key]) return audioCache[key];
-        const db = await this.open();
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction('audio', 'readonly');
-            const req = tx.objectStore('audio').get(key);
-            req.onsuccess = () => { const r = req.result; if (r) audioCache[key] = r.dataUrl; resolve(r ? r.dataUrl : null); };
-            req.onerror = () => reject(req.error);
-        });
+        // Try IndexedDB
+        try {
+            const db = await this.open();
+            const local = await new Promise((resolve) => {
+                const tx = db.transaction('audio', 'readonly');
+                const req = tx.objectStore('audio').get(key);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => resolve(null);
+            });
+            if (local) { audioCache[key] = local.dataUrl; return local.dataUrl; }
+        } catch (e) { /* ignore */ }
+        // Try Supabase DB (fetch public URL and cache as dataUrl)
+        if (!currentUserId || typeof sb === 'undefined') return null;
+        try {
+            const { data } = await sb
+                .from('voice_recordings')
+                .select('storage_path')
+                .eq('user_id', currentUserId)
+                .eq('word', word)
+                .eq('pack_id', packId || 'default')
+                .single();
+            if (data?.storage_path) {
+                const { data: urlData } = sb.storage.from('voice-recordings').getPublicUrl(data.storage_path);
+                if (urlData?.publicUrl) {
+                    audioCache[key] = urlData.publicUrl;
+                    return urlData.publicUrl;
+                }
+            }
+        } catch (e) { /* ignore */ }
+        return null;
     },
     async delete(word, packId) {
-        const db = await this.open();
         const key = packId ? `pack_${packId}::${word}` : word;
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction('audio', 'readwrite');
-            tx.objectStore('audio').delete(key);
-            tx.oncomplete = () => { delete audioCache[key]; resolve(); };
-            tx.onerror = () => reject(tx.error);
-        });
+        // Remove from IndexedDB
+        try {
+            const db = await this.open();
+            await new Promise((resolve) => {
+                const tx = db.transaction('audio', 'readwrite');
+                tx.objectStore('audio').delete(key);
+                tx.oncomplete = () => { delete audioCache[key]; resolve(); };
+            });
+        } catch (e) { /* ignore */ }
+        // Delete from Supabase
+        if (!currentUserId || typeof sb === 'undefined') return;
+        try {
+            const storagePath = `${currentUserId}/${packId || 'default'}/${encodeURIComponent(word)}.webm`;
+            await sb.storage.from('voice-recordings').remove([storagePath]);
+            await sb.from('voice_recordings')
+                .delete()
+                .eq('user_id', currentUserId)
+                .eq('word', word)
+                .eq('pack_id', packId || 'default');
+        } catch (e) { console.warn('Cloud audio delete failed:', e); }
     },
     async loadAll() {
-        const db = await this.open();
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction('audio', 'readonly');
-            const req = tx.objectStore('audio').getAll();
-            req.onsuccess = () => { (req.result || []).forEach(r => { audioCache[r.word] = r.dataUrl; }); resolve(); };
-            req.onerror = () => reject(req.error);
-        });
+        // Load local IndexedDB
+        try {
+            const db = await this.open();
+            await new Promise((resolve) => {
+                const tx = db.transaction('audio', 'readonly');
+                const req = tx.objectStore('audio').getAll();
+                req.onsuccess = () => { (req.result || []).forEach(r => { audioCache[r.word] = r.dataUrl; }); resolve(); };
+                req.onerror = () => resolve();
+            });
+        } catch (e) { /* ignore */ }
+    },
+    // Load all cloud recordings for current user and populate cache
+    async loadAllFromCloud() {
+        if (!currentUserId || typeof sb === 'undefined') return;
+        try {
+            const { data } = await sb
+                .from('voice_recordings')
+                .select('word, pack_id, storage_url')
+                .eq('user_id', currentUserId);
+            if (!data) return;
+            for (const rec of data) {
+                const key = rec.pack_id ? `pack_${rec.pack_id}::${rec.word}` : rec.word;
+                if (!audioCache[key] && rec.storage_url) {
+                    audioCache[key] = rec.storage_url;
+                }
+            }
+        } catch (e) { console.warn('loadAllFromCloud failed:', e); }
     }
 };
 
