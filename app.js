@@ -1472,11 +1472,26 @@ async function speakWord(text) {
     // 4. Final fallback: browser SpeechSynthesis
     if (!('speechSynthesis' in window)) return;
     window.speechSynthesis.cancel();
+
+    // Chrome/Edge load voices asynchronously — wait for them if not yet available
+    let voices = window.speechSynthesis.getVoices();
+    if (voices.length === 0) {
+        await new Promise(resolve => {
+            const handler = () => {
+                voices = window.speechSynthesis.getVoices();
+                window.speechSynthesis.removeEventListener('voiceschanged', handler);
+                resolve();
+            };
+            window.speechSynthesis.addEventListener('voiceschanged', handler);
+            // Safety timeout (5s) in case voicesnever fire
+            setTimeout(resolve, 5000);
+        });
+    }
+
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'zh-CN';
     u.rate = appSettings.rate;
     u.pitch = appSettings.pitch;
-    const voices = window.speechSynthesis.getVoices();
     const selectedVoice = voices.find(v => v.voiceURI === appSettings.voiceURI);
     if (selectedVoice) u.voice = selectedVoice;
     else {
