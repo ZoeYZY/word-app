@@ -1,3 +1,18 @@
+// ==================== Built-in Textbooks ====================
+const BUILTIN_TEXTBOOKS = [
+    '默认课本',
+    '人教版四年级上册',
+    '人教版四年级下册',
+    '部编版四年级上册',
+    '部编版四年级下册',
+    '苏教版四年级上册',
+    '苏教版四年级下册',
+    '北师大版四年级上册',
+    '北师大版四年级下册',
+];
+const DEFAULT_TEXTBOOK = '默认课本';
+const DEFAULT_UNIT = '默认单元';
+
 // ==================== Supabase Client ====================
 const SUPABASE_URL = 'https://wonshabdlvjzdtiicsjf.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_KkLWWWQJ3Nc4SCJ_GI22Tw_zagGImcV';
@@ -69,11 +84,24 @@ async function showMainApp() {
     document.getElementById('authPage').classList.add('hidden');
     document.getElementById('mainApp').classList.remove('hidden');
     lessons = await dbGetLessons();
+    // One-time migration: any lesson without a textbook field gets assigned "默认课本"
+    const needsMigration = lessons.some(l => !l.textbook);
+    if (needsMigration) {
+        for (const l of lessons) {
+            if (!l.textbook) {
+                l.textbook = DEFAULT_TEXTBOOK;
+                await dbPutLesson(l);
+            }
+        }
+        lessons = await dbGetLessons();
+    }
     // Auto-seed from words.js if user's DB is empty
     if (!lessons.length && typeof WORDS_DATA !== 'undefined' && WORDS_DATA.length) {
-        for (const u of WORDS_DATA) {
-            for (const l of u.lessons) {
-                await dbAddLesson({ name: l.name, unit: u.unit, words: [...l.words] });
+        for (const t of WORDS_DATA) {
+            for (const u of (t.units || [])) {
+                for (const l of (u.lessons || [])) {
+                    await dbAddLesson({ name: l.name, textbook: t.textbook, unit: u.unit, words: [...l.words] });
+                }
             }
         }
         lessons = await dbGetLessons();
@@ -156,7 +184,7 @@ async function dbDeleteDictationRecord(id) {
 
 // ==================== State ====================
 let lessons = [], currentWords = [], currentIndex = 0;
-let pendingUnits = [];
+let pendingTextbooks = [];
 let selectedChars = new Set(), selectedCharMeta = {};
 let dictationMode = 'all';
 let dragData = null;
@@ -702,9 +730,31 @@ function closeBatchRec() {
 function groupByUnit(lessonList) {
     const map = {};
     lessonList.forEach(l => {
-        const u = l.unit || '默认单元';
+        const u = l.unit || DEFAULT_UNIT;
         if (!map[u]) map[u] = [];
         map[u].push(l);
+    });
+    return map;
+}
+
+function groupByTextbook(lessonList) {
+    const map = {};
+    lessonList.forEach(l => {
+        const t = l.textbook || DEFAULT_TEXTBOOK;
+        if (!map[t]) map[t] = [];
+        map[t].push(l);
+    });
+    return map;
+}
+
+function groupByTextbookAndUnit(lessonList) {
+    const map = {};
+    lessonList.forEach(l => {
+        const t = l.textbook || DEFAULT_TEXTBOOK;
+        const u = l.unit || DEFAULT_UNIT;
+        if (!map[t]) map[t] = {};
+        if (!map[t][u]) map[t][u] = [];
+        map[t][u].push(l);
     });
     return map;
 }
@@ -819,19 +869,33 @@ function switchTab(tab) {
     if (tab === 'records') renderRecords();
 }
 
-// ==================== Common Text → Units Parser ====================
+// ==================== Common Text → Textbooks Parser ====================
 function parseTextToUnits(fullText, manualName) {
     const lines = fullText.split(/\n/);
+    const textbookPattern = /^(人教版|部编版|苏教版|北师大版)?\s*[一二三四五六七八九十]年级\s*[上下]册[：:\s]*(.*)/;
+    const textbookLabelPattern = /^课本[：:]\s*(.+)/;
     const unitPattern = /^第\s*[一二三四五六七八九十百千\d]+\s*单元[：:\s]*(.*)/;
     const lessonPattern = /^(\d+)\s*[.、．·]?\s*(.+)/;
-    let units = [], curUnit = null, curLesson = null;
+    let textbooks = [], curTextbook = null, curUnit = null, curLesson = null;
+    const ensureTb = () => { if (!curTextbook) curTextbook = { name: DEFAULT_TEXTBOOK, units: [] }; return curTextbook; };
+    const ensureU = () => { const tb = ensureTb(); if (!curUnit) curUnit = { name: DEFAULT_UNIT, lessons: [] }; return { textbook: tb, unit: curUnit }; };
     for (const line of lines) {
         const trimmed = line.trim(); if (!trimmed) continue;
+        const tbInlineMatch = trimmed.match(textbookPattern);
+        const tbLabelMatch = trimmed.match(textbookLabelPattern);
+        if (tbInlineMatch || tbLabelMatch) {
+            if (curLesson && curUnit) curUnit.lessons.push(curLesson);
+            if (curUnit && curTextbook) curTextbook.units.push(curUnit);
+            if (curTextbook) textbooks.push(curTextbook);
+            const name = tbInlineMatch ? trimmed.replace(/[：:]\s*$/, '').trim() : tbLabelMatch[1].trim();
+            curTextbook = { name, units: [] };
+            curUnit = null; curLesson = null; continue;
+        }
         const unitMatch = trimmed.match(unitPattern);
         if (unitMatch) {
             if (curLesson && curUnit) curUnit.lessons.push(curLesson);
-            if (curUnit) units.push(curUnit);
-            curUnit = { unitName: trimmed.replace(/[：:]\s*$/, '').trim(), lessons: [] };
+            if (curUnit) ensureTb().units.push(curUnit);
+            curUnit = { name: trimmed.replace(/[：:]\s*$/, '').trim(), lessons: [] };
             curLesson = null; continue;
         }
         const lessonMatch = trimmed.match(lessonPattern);
@@ -839,26 +903,35 @@ function parseTextToUnits(fullText, manualName) {
             const rest = lessonMatch[2].trim();
             const isExercise = /[：:_—]/.test(rest) || rest.replace(/[^\u4e00-\u9fa5]/g, '').length < 3;
             if (!isExercise) {
-                if (curLesson) { if (!curUnit) curUnit = { unitName: '默认单元', lessons: [] }; curUnit.lessons.push(curLesson); }
+                const { unit } = ensureU();
+                if (curLesson) unit.lessons.push(curLesson);
                 curLesson = { name: `${lessonMatch[1]} ${rest}`, words: [] }; continue;
             }
         }
+        const { unit } = ensureU();
         if (curLesson) {
             const words = trimmed.match(/[\u4e00-\u9fa5]{2,}/g) || [];
             words.forEach(w => { if (!curLesson.words.includes(w)) curLesson.words.push(w); });
         }
     }
-    if (curLesson) { if (!curUnit) curUnit = { unitName: '默认单元', lessons: [] }; curUnit.lessons.push(curLesson); }
-    if (curUnit) units.push(curUnit);
-    units = units.map(u => ({ ...u, lessons: u.lessons.filter(l => l.words.length > 0) })).filter(u => u.lessons.length > 0);
+    if (curLesson && curUnit) curUnit.lessons.push(curLesson);
+    if (curUnit && curTextbook) curTextbook.units.push(curUnit);
+    if (curTextbook) textbooks.push(curTextbook);
+    textbooks = textbooks.map(t => ({
+        name: t.name,
+        units: t.units.map(u => ({ name: u.name, lessons: u.lessons.filter(l => l.words.length > 0) })).filter(u => u.lessons.length > 0)
+    })).filter(t => t.units.length > 0);
 
-    if (!manualName && units.length > 0) {
-        return { units, mode: 'structured' };
+    if (!manualName && textbooks.length > 0) {
+        return { textbooks, mode: 'structured' };
     } else {
         const all = fullText.match(/[\u4e00-\u9fa5]{2,}/g) || [];
         const unique = [...new Set(all)];
-        if (!unique.length) return { units: [], mode: 'empty' };
-        return { units: [{ unitName: '默认单元', lessons: [{ name: manualName || '未命名课文', words: unique }] }], mode: 'flat' };
+        if (!unique.length) return { textbooks: [], mode: 'empty' };
+        return {
+            textbooks: [{ name: DEFAULT_TEXTBOOK, units: [{ name: DEFAULT_UNIT, lessons: [{ name: manualName || '未命名课文', words: unique }] }] }],
+            mode: 'flat'
+        };
     }
 }
 
@@ -949,14 +1022,26 @@ async function parseJsonFile(file, statusEl) {
     let json;
     try { json = JSON.parse(text); } catch (e) { statusEl.textContent = '❌ JSON 格式错误：' + e.message; return; }
 
-    let units = [];
+    let textbooks = [];
 
-    // Format A: [{unit, lessons: [{name, words}]}] (same as WORDS_DATA)
-    if (Array.isArray(json) && json.length > 0 && json[0].unit && json[0].lessons) {
+    // Format A (new): [{textbook, units: [{unit, lessons: [...]}]}]
+    if (Array.isArray(json) && json.length > 0 && json[0].textbook && json[0].units) {
+        for (const t of json) {
+            const tbUnits = (t.units || []).map(u => ({
+                name: u.unit || DEFAULT_UNIT,
+                lessons: (u.lessons || []).map(l => ({ name: l.name || '未命名课文', words: Array.isArray(l.words) ? [...l.words] : [] })).filter(l => l.words.length > 0)
+            })).filter(u => u.lessons.length > 0);
+            if (tbUnits.length) textbooks.push({ name: t.textbook || DEFAULT_TEXTBOOK, units: tbUnits });
+        }
+    }
+    // Format A (legacy): [{unit, lessons: [{name, words}]}] — wrap under 默认课本
+    else if (Array.isArray(json) && json.length > 0 && json[0].unit && json[0].lessons) {
+        const tbUnits = [];
         for (const u of json) {
             const unitLessons = (u.lessons || []).map(l => ({ name: l.name || '未命名课文', words: Array.isArray(l.words) ? [...l.words] : [] })).filter(l => l.words.length > 0);
-            if (unitLessons.length) units.push({ unitName: u.unit || '默认单元', lessons: unitLessons });
+            if (unitLessons.length) tbUnits.push({ name: u.unit || DEFAULT_UNIT, lessons: unitLessons });
         }
+        if (tbUnits.length) textbooks = [{ name: DEFAULT_TEXTBOOK, units: tbUnits }];
     }
     // Format B: {"课文名": ["词1", "词2"]}
     else if (!Array.isArray(json) && typeof json === 'object') {
@@ -967,24 +1052,24 @@ async function parseJsonFile(file, statusEl) {
                 if (words.length) lessons.push({ name: key, words });
             }
         }
-        if (lessons.length) units = [{ unitName: '默认单元', lessons }];
+        if (lessons.length) textbooks = [{ name: DEFAULT_TEXTBOOK, units: [{ name: DEFAULT_UNIT, lessons }] }];
     }
     // Format C: ["词1", "词2", "词3"]
     else if (Array.isArray(json) && json.length > 0 && typeof json[0] === 'string') {
         const words = json.filter(w => typeof w === 'string' && w.trim());
         const manualName = document.getElementById('lessonName').value.trim();
-        if (words.length) units = [{ unitName: '默认单元', lessons: [{ name: manualName || '未命名课文', words }] }];
+        if (words.length) textbooks = [{ name: DEFAULT_TEXTBOOK, units: [{ name: DEFAULT_UNIT, lessons: [{ name: manualName || '未命名课文', words }] }] }];
     }
 
-    if (!units.length) {
+    if (!textbooks.length) {
         statusEl.textContent = '😢 JSON 中没有发现可导入的词语';
         document.getElementById('previewArea').classList.add('hidden');
         return;
     }
-    pendingUnits = units;
-    const totalL = units.reduce((s, u) => s + u.lessons.length, 0);
-    const totalW = units.reduce((s, u) => s + u.lessons.reduce((s2, l) => s2 + l.words.length, 0), 0);
-    statusEl.textContent = `✅ 识别了 ${units.length} 个单元, ${totalL} 课, ${totalW} 个词语！`;
+    pendingTextbooks = textbooks;
+    const totalL = textbooks.reduce((s, t) => s + t.units.reduce((s2, u) => s2 + u.lessons.length, 0), 0);
+    const totalW = textbooks.reduce((s, t) => s + t.units.reduce((s2, u) => s2 + u.lessons.reduce((s3, l) => s3 + l.words.length, 0), 0), 0);
+    statusEl.textContent = `✅ 识别了 ${textbooks.length} 本课本, ${totalL} 课, ${totalW} 个词语！`;
     renderMultiPreview();
 }
 
@@ -995,13 +1080,13 @@ function applyParseResult(result, statusEl) {
         document.getElementById('previewArea').classList.add('hidden');
         return;
     }
-    pendingUnits = result.units;
+    pendingTextbooks = result.textbooks;
     if (result.mode === 'structured') {
-        const totalL = result.units.reduce((s, u) => s + u.lessons.length, 0);
-        const totalW = result.units.reduce((s, u) => s + u.lessons.reduce((s2, l) => s2 + l.words.length, 0), 0);
-        statusEl.textContent = `✅ 识别了 ${result.units.length} 个单元, ${totalL} 课, ${totalW} 个词语！`;
+        const totalL = result.textbooks.reduce((s, t) => s + t.units.reduce((s2, u) => s2 + u.lessons.length, 0), 0);
+        const totalW = result.textbooks.reduce((s, t) => s + t.units.reduce((s2, u) => s2 + u.lessons.reduce((s3, l) => s3 + l.words.length, 0), 0), 0);
+        statusEl.textContent = `✅ 识别了 ${result.textbooks.length} 本课本, ${totalL} 课, ${totalW} 个词语！`;
     } else {
-        const count = result.units[0].lessons[0].words.length;
+        const count = result.textbooks[0].units[0].lessons[0].words.length;
         statusEl.textContent = `✅ 找到了 ${count} 个词语！`;
     }
     renderMultiPreview();
@@ -1011,87 +1096,127 @@ function applyParseResult(result, statusEl) {
 function renderMultiPreview() {
     const container = document.getElementById('previewContent');
     container.innerHTML = '';
-    const totalL = pendingUnits.reduce((s, u) => s + u.lessons.length, 0);
-    const totalW = pendingUnits.reduce((s, u) => s + u.lessons.reduce((s2, l) => s2 + l.words.length, 0), 0);
+    const totalL = pendingTextbooks.reduce((s, t) => s + t.units.reduce((s2, u) => s2 + u.lessons.length, 0), 0);
+    const totalW = pendingTextbooks.reduce((s, t) => s + t.units.reduce((s2, u) => s2 + u.lessons.reduce((s3, l) => s3 + l.words.length, 0), 0), 0);
     const summary = document.createElement('div');
     summary.className = 'flex items-center justify-between mb-3';
-    summary.innerHTML = `<p class="text-sm font-bold text-gray-600">🔍 ${pendingUnits.length} 个单元, ${totalL} 课, ${totalW} 个词语</p><p class="text-xs text-gray-400">💡 可编辑名称 · 拖拽词语到其他课文</p>`;
+    summary.innerHTML = `<p class="text-sm font-bold text-gray-600">🔍 ${pendingTextbooks.length} 本课本, ${totalL} 课, ${totalW} 个词语</p><p class="text-xs text-gray-400">💡 可编辑名称 · 拖拽词语到其他课文</p>`;
     container.appendChild(summary);
 
-    pendingUnits.forEach((unit, ui) => {
-        const unitCard = document.createElement('div'); unitCard.className = 'unit-card mb-4';
-        const unitHeader = document.createElement('div'); unitHeader.className = 'flex items-center gap-2 mb-2';
-        unitHeader.innerHTML = '<span class="text-lg">📦</span>';
-        const unitInput = document.createElement('input'); unitInput.type = 'text'; unitInput.value = unit.unitName;
-        unitInput.className = 'unit-name-input'; unitInput.style.width = Math.max(120, unit.unitName.length * 16) + 'px';
-        unitInput.addEventListener('input', () => { unit.unitName = unitInput.value; unitInput.style.width = Math.max(120, unitInput.value.length * 16) + 'px'; });
-        const unitStats = document.createElement('span'); unitStats.className = 'preview-stats'; unitStats.textContent = `${unit.lessons.length} 课`;
-        const unitDelBtn = document.createElement('button'); unitDelBtn.className = 'text-gray-300 hover:text-red-400 text-sm ml-auto cursor-pointer'; unitDelBtn.textContent = '🗑️';
-        unitDelBtn.onclick = () => { pendingUnits.splice(ui, 1); if (!pendingUnits.length) document.getElementById('previewArea').classList.add('hidden'); renderMultiPreview(); };
-        unitHeader.appendChild(unitInput); unitHeader.appendChild(unitStats); unitHeader.appendChild(unitDelBtn);
-        unitCard.appendChild(unitHeader);
+    pendingTextbooks.forEach((tb, ti) => {
+        const tbCard = document.createElement('div'); tbCard.className = 'unit-card mb-4'; tbCard.style.borderColor = '#FED7AA'; tbCard.style.background = '#FFFBEB';
+        const tbHeader = document.createElement('div'); tbHeader.className = 'flex items-center gap-2 mb-2';
+        tbHeader.innerHTML = '<span class="text-lg">📚</span>';
+        const tbInput = document.createElement('input'); tbInput.type = 'text'; tbInput.value = tb.name;
+        tbInput.className = 'unit-name-input'; tbInput.style.width = Math.max(120, tb.name.length * 17) + 'px';
+        tbInput.addEventListener('input', () => { tb.name = tbInput.value; tbInput.style.width = Math.max(120, tbInput.value.length * 17) + 'px'; });
+        const tbStats = document.createElement('span'); tbStats.className = 'preview-stats'; tbStats.textContent = `${tb.units.length} 单元`;
+        const tbDelBtn = document.createElement('button'); tbDelBtn.className = 'text-gray-300 hover:text-red-400 text-sm ml-auto cursor-pointer'; tbDelBtn.textContent = '🗑️';
+        tbDelBtn.onclick = () => { pendingTextbooks.splice(ti, 1); if (!pendingTextbooks.length) document.getElementById('previewArea').classList.add('hidden'); renderMultiPreview(); };
+        tbHeader.appendChild(tbInput); tbHeader.appendChild(tbStats); tbHeader.appendChild(tbDelBtn);
+        tbCard.appendChild(tbHeader);
 
-        unit.lessons.forEach((lesson, li) => {
-            const lessonCard = document.createElement('div'); lessonCard.className = 'preview-lesson mb-2 ml-4';
-            lessonCard.addEventListener('dragover', (e) => { e.preventDefault(); lessonCard.classList.add('drag-over'); });
-            lessonCard.addEventListener('dragleave', () => lessonCard.classList.remove('drag-over'));
-            lessonCard.addEventListener('drop', (e) => {
-                e.preventDefault(); lessonCard.classList.remove('drag-over');
-                if (!dragData) return; if (dragData.unitIdx === ui && dragData.lessonIdx === li) return;
-                const word = dragData.word;
-                const srcUnit = pendingUnits[dragData.unitIdx];
-                if (srcUnit) { const srcLesson = srcUnit.lessons[dragData.lessonIdx]; if (srcLesson) { srcLesson.words.splice(dragData.wordIdx, 1); if (!srcLesson.words.length) { srcUnit.lessons.splice(dragData.lessonIdx, 1); if (!srcUnit.lessons.length) pendingUnits.splice(dragData.unitIdx, 1); } } }
-                if (!lesson.words.includes(word)) lesson.words.push(word);
-                dragData = null; renderMultiPreview();
+        tb.units.forEach((unit, ui) => {
+            const unitCard = document.createElement('div'); unitCard.className = 'unit-card mb-3 ml-3';
+            const unitHeader = document.createElement('div'); unitHeader.className = 'flex items-center gap-2 mb-2';
+            unitHeader.innerHTML = '<span class="text-lg">📦</span>';
+            const unitInput = document.createElement('input'); unitInput.type = 'text'; unitInput.value = unit.name;
+            unitInput.className = 'unit-name-input'; unitInput.style.width = Math.max(120, unit.name.length * 16) + 'px';
+            unitInput.addEventListener('input', () => { unit.name = unitInput.value; unitInput.style.width = Math.max(120, unitInput.value.length * 16) + 'px'; });
+            const unitStats = document.createElement('span'); unitStats.className = 'preview-stats'; unitStats.textContent = `${unit.lessons.length} 课`;
+            const unitDelBtn = document.createElement('button'); unitDelBtn.className = 'text-gray-300 hover:text-red-400 text-sm ml-auto cursor-pointer'; unitDelBtn.textContent = '🗑️';
+            unitDelBtn.onclick = () => { tb.units.splice(ui, 1); if (!tb.units.length) pendingTextbooks.splice(ti, 1); if (!pendingTextbooks.length) document.getElementById('previewArea').classList.add('hidden'); renderMultiPreview(); };
+            unitHeader.appendChild(unitInput); unitHeader.appendChild(unitStats); unitHeader.appendChild(unitDelBtn);
+            unitCard.appendChild(unitHeader);
+
+            unit.lessons.forEach((lesson, li) => {
+                const lessonCard = document.createElement('div'); lessonCard.className = 'preview-lesson mb-2 ml-4';
+                lessonCard.addEventListener('dragover', (e) => { e.preventDefault(); lessonCard.classList.add('drag-over'); });
+                lessonCard.addEventListener('dragleave', () => lessonCard.classList.remove('drag-over'));
+                lessonCard.addEventListener('drop', (e) => {
+                    e.preventDefault(); lessonCard.classList.remove('drag-over');
+                    if (!dragData) return;
+                    if (dragData.tbIdx === ti && dragData.unitIdx === ui && dragData.lessonIdx === li) return;
+                    const word = dragData.word;
+                    const srcTb = pendingTextbooks[dragData.tbIdx];
+                    if (srcTb) {
+                        const srcUnit = srcTb.units[dragData.unitIdx];
+                        if (srcUnit) {
+                            const srcLesson = srcUnit.lessons[dragData.lessonIdx];
+                            if (srcLesson) {
+                                srcLesson.words.splice(dragData.wordIdx, 1);
+                                if (!srcLesson.words.length) {
+                                    srcUnit.lessons.splice(dragData.lessonIdx, 1);
+                                    if (!srcUnit.lessons.length) srcTb.units.splice(dragData.unitIdx, 1);
+                                }
+                                if (!srcTb.units.length) pendingTextbooks.splice(dragData.tbIdx, 1);
+                            }
+                        }
+                    }
+                    if (!lesson.words.includes(word)) lesson.words.push(word);
+                    dragData = null; renderMultiPreview();
+                });
+                const lDelBtn = document.createElement('button'); lDelBtn.className = 'preview-delete-btn'; lDelBtn.textContent = '🗑️';
+                lDelBtn.onclick = () => { unit.lessons.splice(li, 1); if (!unit.lessons.length) { tb.units.splice(ui, 1); if (!tb.units.length) pendingTextbooks.splice(ti, 1); } if (!pendingTextbooks.length) document.getElementById('previewArea').classList.add('hidden'); renderMultiPreview(); };
+                const lHeader = document.createElement('div'); lHeader.className = 'flex items-center gap-2 mb-2';
+                lHeader.innerHTML = '<span class="text-base">📗</span>';
+                const lInput = document.createElement('input'); lInput.type = 'text'; lInput.value = lesson.name;
+                lInput.className = 'lesson-name-input'; lInput.style.width = Math.max(100, lesson.name.length * 15) + 'px';
+                lInput.addEventListener('input', () => { lesson.name = lInput.value; lInput.style.width = Math.max(100, lInput.value.length * 15) + 'px'; });
+                const lStats = document.createElement('span'); lStats.className = 'preview-stats'; lStats.textContent = `${lesson.words.length} 词`;
+                lHeader.appendChild(lInput); lHeader.appendChild(lStats);
+                const wordsDiv = document.createElement('div'); wordsDiv.className = 'flex flex-wrap gap-1.5';
+                lesson.words.forEach((w, wi) => {
+                    const tag = document.createElement('div'); tag.className = 'word-tag text-xs drag-word'; tag.draggable = true;
+                    tag.innerHTML = `<span>${w}</span>`;
+                    const delW = document.createElement('button'); delW.className = 'text-gray-300 hover:text-red-400 ml-0.5 text-xs'; delW.textContent = '✕';
+                    delW.onclick = (e) => {
+                        e.stopPropagation();
+                        lesson.words.splice(wi, 1);
+                        if (!lesson.words.length) { unit.lessons.splice(li, 1); if (!unit.lessons.length) { tb.units.splice(ui, 1); if (!tb.units.length) pendingTextbooks.splice(ti, 1); } }
+                        if (!pendingTextbooks.length) document.getElementById('previewArea').classList.add('hidden');
+                        renderMultiPreview();
+                    };
+                    tag.appendChild(delW);
+                    tag.addEventListener('dragstart', (e) => { dragData = { tbIdx: ti, unitIdx: ui, lessonIdx: li, wordIdx: wi, word: w }; tag.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', w); });
+                    tag.addEventListener('dragend', () => { tag.classList.remove('dragging'); dragData = null; });
+                    wordsDiv.appendChild(tag);
+                });
+                lessonCard.appendChild(lDelBtn); lessonCard.appendChild(lHeader); lessonCard.appendChild(wordsDiv);
+                unitCard.appendChild(lessonCard);
             });
-            const lDelBtn = document.createElement('button'); lDelBtn.className = 'preview-delete-btn'; lDelBtn.textContent = '🗑️';
-            lDelBtn.onclick = () => { unit.lessons.splice(li, 1); if (!unit.lessons.length) pendingUnits.splice(ui, 1); if (!pendingUnits.length) document.getElementById('previewArea').classList.add('hidden'); renderMultiPreview(); };
-            const lHeader = document.createElement('div'); lHeader.className = 'flex items-center gap-2 mb-2';
-            lHeader.innerHTML = '<span class="text-base">📗</span>';
-            const lInput = document.createElement('input'); lInput.type = 'text'; lInput.value = lesson.name;
-            lInput.className = 'lesson-name-input'; lInput.style.width = Math.max(100, lesson.name.length * 15) + 'px';
-            lInput.addEventListener('input', () => { lesson.name = lInput.value; lInput.style.width = Math.max(100, lInput.value.length * 15) + 'px'; });
-            const lStats = document.createElement('span'); lStats.className = 'preview-stats'; lStats.textContent = `${lesson.words.length} 词`;
-            lHeader.appendChild(lInput); lHeader.appendChild(lStats);
-            const wordsDiv = document.createElement('div'); wordsDiv.className = 'flex flex-wrap gap-1.5';
-            lesson.words.forEach((w, wi) => {
-                const tag = document.createElement('div'); tag.className = 'word-tag text-xs drag-word'; tag.draggable = true;
-                tag.innerHTML = `<span>${w}</span>`;
-                const delW = document.createElement('button'); delW.className = 'text-gray-300 hover:text-red-400 ml-0.5 text-xs'; delW.textContent = '✕';
-                delW.onclick = (e) => { e.stopPropagation(); lesson.words.splice(wi, 1); if (!lesson.words.length) { unit.lessons.splice(li, 1); if (!unit.lessons.length) pendingUnits.splice(ui, 1); } if (!pendingUnits.length) document.getElementById('previewArea').classList.add('hidden'); renderMultiPreview(); };
-                tag.appendChild(delW);
-                tag.addEventListener('dragstart', (e) => { dragData = { unitIdx: ui, lessonIdx: li, wordIdx: wi, word: w }; tag.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', w); });
-                tag.addEventListener('dragend', () => { tag.classList.remove('dragging'); dragData = null; });
-                wordsDiv.appendChild(tag);
-            });
-            lessonCard.appendChild(lDelBtn); lessonCard.appendChild(lHeader); lessonCard.appendChild(wordsDiv);
-            unitCard.appendChild(lessonCard);
+            tbCard.appendChild(unitCard);
         });
-        container.appendChild(unitCard);
+        container.appendChild(tbCard);
     });
     document.getElementById('previewArea').classList.remove('hidden');
 }
 
 async function confirmImport() {
-    if (!pendingUnits.length) return;
-    for (const u of pendingUnits) {
-        if (!u.unitName.trim()) { alert('🌸 有单元名称为空，请填写！'); return; }
-        for (const l of u.lessons) { if (!l.name.trim()) { alert('🌸 有课文名称为空，请填写！'); return; } }
+    if (!pendingTextbooks.length) return;
+    for (const t of pendingTextbooks) {
+        if (!t.name.trim()) { alert('🌸 有课本名称为空，请填写！'); return; }
+        for (const u of t.units) {
+            if (!u.name.trim()) { alert('🌸 有单元名称为空，请填写！'); return; }
+            for (const l of u.lessons) { if (!l.name.trim()) { alert('🌸 有课文名称为空，请填写！'); return; } }
+        }
     }
-    for (const u of pendingUnits) {
-        for (const l of u.lessons) {
-            const name = l.name.trim(), unitName = u.unitName.trim();
-            let existing = lessons.find(x => x.name === name && x.unit === unitName);
-            if (existing) {
-                const set = new Set(existing.words); l.words.forEach(w => set.add(w)); existing.words = [...set];
-                await dbPutLesson(existing);
-            } else {
-                await dbAddLesson({ name, unit: unitName, words: l.words });
+    for (const t of pendingTextbooks) {
+        for (const u of t.units) {
+            for (const l of u.lessons) {
+                const name = l.name.trim(), unitName = u.name.trim(), tbName = t.name.trim();
+                let existing = lessons.find(x => x.name === name && x.unit === unitName && (x.textbook || DEFAULT_TEXTBOOK) === tbName);
+                if (existing) {
+                    const set = new Set(existing.words); l.words.forEach(w => set.add(w)); existing.words = [...set];
+                    await dbPutLesson(existing);
+                } else {
+                    await dbAddLesson({ name, textbook: tbName, unit: unitName, words: l.words });
+                }
             }
         }
     }
     lessons = await dbGetLessons(); renderLibrary();
-    pendingUnits = [];
+    pendingTextbooks = [];
     document.getElementById('previewArea').classList.add('hidden');
     document.getElementById('uploadStatus').textContent = '🎉 导入成功！';
     document.getElementById('pdfInput').value = '';
@@ -1100,19 +1225,46 @@ async function confirmImport() {
 }
 
 // ==================== Manual Add ====================
+function populateManualTextbook() {
+    const sel = document.getElementById('manualTextbook');
+    if (!sel) return;
+    // Build options: built-ins + any custom textbooks already in DB
+    const used = new Set([...BUILTIN_TEXTBOOKS, ...lessons.map(l => l.textbook || DEFAULT_TEXTBOOK)]);
+    sel.innerHTML = [...used].map(t => `<option value="${t}">${t}</option>`).join('') +
+        '<option value="__custom__">➕ 新建课本...</option>';
+    if (!sel.value) sel.value = DEFAULT_TEXTBOOK;
+}
+
+function resolveManualTextbook() {
+    const sel = document.getElementById('manualTextbook');
+    if (!sel) return DEFAULT_TEXTBOOK;
+    let v = sel.value;
+    if (v === '__custom__') {
+        const name = prompt('请输入新课本名称（如：人教版四年级上册）');
+        if (!name || !name.trim()) return sel.options[sel.selectedIndex]?.dataset.prev || DEFAULT_TEXTBOOK;
+        v = name.trim();
+        // Insert as option and select it
+        const opt = document.createElement('option'); opt.value = v; opt.textContent = v;
+        sel.insertBefore(opt, sel.querySelector('option[value="__custom__"]'));
+        sel.value = v;
+    }
+    return v || DEFAULT_TEXTBOOK;
+}
+
 async function addManualWords() {
     const name = document.getElementById('manualLesson').value.trim();
     const str = document.getElementById('manualWords').value.trim();
-    const unitName = document.getElementById('manualUnit')?.value.trim() || '默认单元';
+    const tbName = resolveManualTextbook();
+    const unitName = document.getElementById('manualUnit')?.value.trim() || DEFAULT_UNIT;
     if (!name || !str) { alert('🌸 请填写名称和词语！'); return; }
     const words = str.split(/[\s,，、;；]+/).filter(w => w.length >= 1);
     if (!words.length) return;
-    let lesson = lessons.find(l => l.name === name && l.unit === unitName);
+    let lesson = lessons.find(l => l.name === name && l.unit === unitName && (l.textbook || DEFAULT_TEXTBOOK) === tbName);
     if (lesson) {
         const set = new Set(lesson.words); words.forEach(w => set.add(w)); lesson.words = [...set];
         await dbPutLesson(lesson);
     } else {
-        await dbAddLesson({ name, unit: unitName, words: [...new Set(words)] });
+        await dbAddLesson({ name, textbook: tbName, unit: unitName, words: [...new Set(words)] });
     }
     lessons = await dbGetLessons(); renderLibrary();
     document.getElementById('manualWords').value = '';
@@ -1124,6 +1276,7 @@ async function addManualWords() {
 let libDragData = null;
 let expandedUnits = new Set();
 let expandedLessons = new Set();
+let expandedTextbooks = new Set();
 
 function rebuildWordsDiv(wordsDiv, lesson, mm) {
     wordsDiv.innerHTML = '';
@@ -1185,21 +1338,32 @@ function rebuildWordsDiv(wordsDiv, lesson, mm) {
     });
 }
 
-function updateUnitBadge(unitName) {
-    const grouped = groupByUnit(lessons);
-    const uLessons = grouped[unitName];
-    if (!uLessons) return;
-    const tw = uLessons.reduce((s, l) => s + l.words.length, 0);
-    const badges = document.querySelectorAll('#libraryContent .bg-brand-100');
-    badges.forEach(b => {
-        if (b.textContent.includes('课') && b.textContent.includes('词')) {
-            const parentDiv = b.closest('.mb-4');
-            if (parentDiv) {
-                const unitInput = parentDiv.querySelector('.unit-name-input');
-                if (unitInput && unitInput.value === unitName) {
-                    b.textContent = `${uLessons.length} 课 · ${tw} 词`;
-                }
-            }
+function updateUnitBadge(unitName, textbookName) {
+    const grouped = groupByTextbookAndUnit(lessons);
+    const target = (textbookName && grouped[textbookName]) ? grouped[textbookName][unitName] : null;
+    if (!target) return;
+    const tw = target.reduce((s, l) => s + l.words.length, 0);
+    document.querySelectorAll('#libraryContent .bg-brand-100').forEach(b => {
+        const parentDiv = b.closest('[data-unit-block]');
+        if (!parentDiv) return;
+        const unitInput = parentDiv.querySelector('.unit-name-input');
+        if (unitInput && unitInput.value === unitName) {
+            b.textContent = `${target.length} 课 · ${tw} 词`;
+        }
+    });
+}
+
+function updateTextbookBadge(textbookName) {
+    const grouped = groupByTextbook(lessons);
+    const tbLessons = grouped[textbookName];
+    if (!tbLessons) return;
+    const tLessonsCount = tbLessons.length;
+    const tWords = tbLessons.reduce((s, l) => s + l.words.length, 0);
+    document.querySelectorAll('#libraryContent [data-textbook-block]').forEach(b => {
+        const tbInput = b.querySelector('.textbook-name-input');
+        if (tbInput && tbInput.value === textbookName) {
+            const badge = b.querySelector('.textbook-badge');
+            if (badge) badge.textContent = `${tLessonsCount} 课 · ${tWords} 词`;
         }
     });
 }
@@ -1208,6 +1372,7 @@ async function renderLibrary() {
     const container = document.getElementById('libraryContent');
     const emptyMsg = document.getElementById('emptyLibrary');
     lessons = await dbGetLessons();
+    populateManualTextbook();
     document.getElementById('lessonCount').textContent = `${lessons.length} 课`;
     let mm = {};
     try { (await dbGetMistakes()).forEach(m => { mm[m.char] = m.count; }); } catch (e) { }
@@ -1215,116 +1380,183 @@ async function renderLibrary() {
     emptyMsg.classList.add('hidden');
     container.innerHTML = '';
 
-    const grouped = groupByUnit(lessons);
-    let uidx = 0;
-    for (const unitName in grouped) {
-        const uLessons = grouped[unitName];
-        const tw = uLessons.reduce((s, l) => s + l.words.length, 0);
-        const uDiv = document.createElement('div'); uDiv.className = 'mb-4 animate-slide-up'; uDiv.style.animationDelay = (uidx * 0.08) + 's';
+    const grouped = groupByTextbookAndUnit(lessons);
+    let tidx = 0;
+    for (const textbookName in grouped) {
+        const tbLessons = Object.values(grouped[textbookName]).flat();
+        const tbWords = tbLessons.reduce((s, l) => s + l.words.length, 0);
+        const tbDiv = document.createElement('div');
+        tbDiv.className = 'mb-5 animate-slide-up'; tbDiv.style.animationDelay = (tidx * 0.08) + 's';
+        tbDiv.dataset.textbookBlock = textbookName;
 
-        const uHead = document.createElement('div'); uHead.className = 'flex items-center gap-2 mb-2';
-        const uArrow = document.createElement('span'); uArrow.className = 'text-brand-500 transition-transform text-sm font-bold cursor-pointer'; uArrow.textContent = '▶';
-        const uIcon = document.createElement('span'); uIcon.textContent = '📦 '; uIcon.className = 'cursor-pointer';
-        const uInput = document.createElement('input'); uInput.type = 'text'; uInput.value = unitName;
-        uInput.className = 'unit-name-input'; uInput.style.width = Math.max(80, unitName.length * 16) + 'px';
-        uInput.addEventListener('input', () => { uInput.style.width = Math.max(80, uInput.value.length * 16) + 'px'; });
-        uInput.addEventListener('blur', async () => {
-            const n = uInput.value.trim();
-            if (n && n !== unitName) {
-                expandedUnits.delete(unitName); expandedUnits.add(n);
+        // === Textbook header ===
+        const tbHead = document.createElement('div'); tbHead.className = 'flex items-center gap-2 mb-2';
+        const tbArrow = document.createElement('span'); tbArrow.className = 'text-brand-600 transition-transform text-base font-bold cursor-pointer'; tbArrow.textContent = '▶';
+        const tbIcon = document.createElement('span'); tbIcon.textContent = '📚 '; tbIcon.className = 'cursor-pointer text-lg';
+        const tbInput = document.createElement('input'); tbInput.type = 'text'; tbInput.value = textbookName;
+        tbInput.className = 'textbook-name-input unit-name-input'; tbInput.style.width = Math.max(100, textbookName.length * 17) + 'px';
+        tbInput.style.fontSize = '1.15rem'; tbInput.style.color = '#7C2D12';
+        tbInput.addEventListener('input', () => { tbInput.style.width = Math.max(100, tbInput.value.length * 17) + 'px'; });
+        tbInput.addEventListener('blur', async () => {
+            const n = tbInput.value.trim();
+            if (!n || n === textbookName) return;
+            if (!confirm(`将课本「${textbookName}」改名为「${n}」？所有该课本下的课文都会更新。`)) { tbInput.value = textbookName; return; }
+            expandedTextbooks.delete(textbookName); expandedTextbooks.add(n);
+            for (const l of tbLessons) { l.textbook = n; await dbPutLesson(l); }
+            lessons = await dbGetLessons(); renderLibrary();
+        });
+        const tbBadge = document.createElement('span');
+        tbBadge.className = 'text-xs bg-brand-200 text-brand-700 px-2 py-0.5 rounded-full font-bold textbook-badge';
+        tbBadge.textContent = `${tbLessons.length} 课 · ${tbWords} 词`;
+        const tbDel = document.createElement('button');
+        tbDel.className = 'ml-auto text-gray-300 hover:text-red-400 text-sm cursor-pointer';
+        tbDel.title = '删除整个课本';
+        tbDel.textContent = '🗑️';
+        tbDel.onclick = async () => {
+            if (!confirm(`确定删除整个课本「${textbookName}」及其下 ${tbLessons.length} 篇课文吗？此操作不可恢复！`)) return;
+            for (const l of tbLessons) { await dbDelLesson(l.id); }
+            expandedTextbooks.delete(textbookName);
+            lessons = await dbGetLessons(); renderLibrary();
+            spawnEmoji('🗑️');
+        };
+        const tbBody = document.createElement('div'); tbBody.className = 'ml-2 space-y-3';
+        const isTbExpanded = expandedTextbooks.has(textbookName);
+        if (!isTbExpanded) tbBody.classList.add('hidden');
+        if (isTbExpanded) tbArrow.style.transform = 'rotate(90deg)';
+
+        const toggleTb = () => {
+            tbBody.classList.toggle('hidden');
+            const nowHidden = tbBody.classList.contains('hidden');
+            tbArrow.style.transform = nowHidden ? '' : 'rotate(90deg)';
+            if (nowHidden) expandedTextbooks.delete(textbookName); else expandedTextbooks.add(textbookName);
+        };
+        tbArrow.onclick = toggleTb; tbIcon.onclick = toggleTb;
+        tbHead.appendChild(tbArrow); tbHead.appendChild(tbIcon); tbHead.appendChild(tbInput); tbHead.appendChild(tbBadge); tbHead.appendChild(tbDel);
+        tbDiv.appendChild(tbHead);
+        tbDiv.dataset.textbookBlock = textbookName; // ensure selector works after children appended
+
+        // === Units within this textbook ===
+        let uidx = 0;
+        for (const unitName in grouped[textbookName]) {
+            const uLessons = grouped[textbookName][unitName];
+            const uWords = uLessons.reduce((s, l) => s + l.words.length, 0);
+            const unitKey = `${textbookName}::${unitName}`;
+            const uDiv = document.createElement('div');
+            uDiv.className = 'mb-3 ml-3';
+            uDiv.dataset.unitBlock = unitKey;
+
+            const uHead = document.createElement('div'); uHead.className = 'flex items-center gap-2 mb-2';
+            const uArrow = document.createElement('span'); uArrow.className = 'text-brand-500 transition-transform text-sm font-bold cursor-pointer'; uArrow.textContent = '▶';
+            const uIcon = document.createElement('span'); uIcon.textContent = '📦 '; uIcon.className = 'cursor-pointer';
+            const uInput = document.createElement('input'); uInput.type = 'text'; uInput.value = unitName;
+            uInput.className = 'unit-name-input'; uInput.style.width = Math.max(80, unitName.length * 16) + 'px';
+            uInput.addEventListener('input', () => { uInput.style.width = Math.max(80, uInput.value.length * 16) + 'px'; });
+            uInput.addEventListener('blur', async () => {
+                const n = uInput.value.trim();
+                if (!n || n === unitName) return;
+                expandedUnits.delete(unitKey); expandedUnits.add(`${textbookName}::${n}`);
                 for (const l of uLessons) { l.unit = n; await dbPutLesson(l); }
                 lessons = await dbGetLessons(); renderLibrary();
-            }
-        });
-        const uBadge = document.createElement('span'); uBadge.className = 'text-xs bg-brand-100 text-brand-600 px-2 py-0.5 rounded-full font-bold'; uBadge.textContent = `${uLessons.length} 课 · ${tw} 词`;
-        const uBody = document.createElement('div'); uBody.className = 'ml-2 space-y-2';
-        // Restore expand state
-        const isUnitExpanded = expandedUnits.has(unitName);
-        if (!isUnitExpanded) uBody.classList.add('hidden');
-        if (isUnitExpanded) uArrow.style.transform = 'rotate(90deg)';
-
-        const toggleU = () => {
-            uBody.classList.toggle('hidden');
-            const nowHidden = uBody.classList.contains('hidden');
-            uArrow.style.transform = nowHidden ? '' : 'rotate(90deg)';
-            if (nowHidden) expandedUnits.delete(unitName); else expandedUnits.add(unitName);
-        };
-        uArrow.onclick = toggleU; uIcon.onclick = toggleU;
-        uHead.appendChild(uArrow); uHead.appendChild(uIcon); uHead.appendChild(uInput); uHead.appendChild(uBadge);
-        uDiv.appendChild(uHead);
-
-        uLessons.forEach(lesson => {
-            const lessonKey = `${unitName}::${lesson.id}`;
-            const lDiv = document.createElement('div'); lDiv.className = 'lesson-row';
-            const lHead = document.createElement('div'); lHead.className = 'flex items-center justify-between';
-            const lLeft = document.createElement('div'); lLeft.className = 'flex items-center gap-2 flex-1';
-            const lArrow = document.createElement('span'); lArrow.className = 'text-brand-400 transition-transform text-xs font-bold cursor-pointer'; lArrow.textContent = '▶';
-            const lInput = document.createElement('input'); lInput.type = 'text'; lInput.value = lesson.name;
-            lInput.className = 'lesson-name-input text-sm'; lInput.style.width = Math.max(60, lesson.name.length * 14) + 'px';
-            lInput.addEventListener('input', () => { lInput.style.width = Math.max(60, lInput.value.length * 14) + 'px'; });
-            lInput.addEventListener('blur', async () => { const n = lInput.value.trim(); if (n && n !== lesson.name) { lesson.name = n; await dbPutLesson(lesson); lessons = await dbGetLessons(); } });
-            const lBadge = document.createElement('span'); lBadge.className = 'text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full font-bold'; lBadge.textContent = `${lesson.words.length} 词`;
-            const lDel = document.createElement('button'); lDel.className = 'w-7 h-7 flex items-center justify-center rounded-full hover:bg-red-50 text-gray-300 hover:text-red-400 transition-colors text-sm'; lDel.textContent = '🗑️';
-            lDel.onclick = async () => {
-                if (!confirm(`确定删除「${lesson.name}」？`)) return;
-                expandedLessons.delete(lessonKey);
-                await dbDelLesson(lesson.id); lessons = await dbGetLessons(); renderLibrary();
+            });
+            const uBadge = document.createElement('span'); uBadge.className = 'text-xs bg-brand-100 text-brand-600 px-2 py-0.5 rounded-full font-bold'; uBadge.textContent = `${uLessons.length} 课 · ${uWords} 词`;
+            const uDel = document.createElement('button');
+            uDel.className = 'ml-auto text-gray-300 hover:text-red-400 text-xs cursor-pointer';
+            uDel.title = '删除整个单元';
+            uDel.textContent = '🗑️';
+            uDel.onclick = async () => {
+                if (!confirm(`确定删除「${unitName}」及其下 ${uLessons.length} 篇课文吗？`)) return;
+                for (const l of uLessons) { await dbDelLesson(l.id); }
+                lessons = await dbGetLessons(); renderLibrary();
             };
-            lLeft.appendChild(lArrow); lLeft.appendChild(lInput); lLeft.appendChild(lBadge);
-            lHead.appendChild(lLeft); lHead.appendChild(lDel);
+            const uBody = document.createElement('div'); uBody.className = 'ml-2 space-y-2';
+            const isUnitExpanded = expandedUnits.has(unitKey);
+            if (!isUnitExpanded) uBody.classList.add('hidden');
+            if (isUnitExpanded) uArrow.style.transform = 'rotate(90deg)';
 
-            const wordsArea = document.createElement('div'); wordsArea.className = 'mt-2 ml-4 pt-2 border-t border-gray-100';
-            // Restore lesson expand state
-            const isLessonExpanded = expandedLessons.has(lessonKey);
-            if (!isLessonExpanded) wordsArea.classList.add('hidden');
-            if (isLessonExpanded) lArrow.style.transform = 'rotate(90deg)';
+            const toggleU = () => {
+                uBody.classList.toggle('hidden');
+                const nowHidden = uBody.classList.contains('hidden');
+                uArrow.style.transform = nowHidden ? '' : 'rotate(90deg)';
+                if (nowHidden) expandedUnits.delete(unitKey); else expandedUnits.add(unitKey);
+            };
+            uArrow.onclick = toggleU; uIcon.onclick = toggleU;
+            uHead.appendChild(uArrow); uHead.appendChild(uIcon); uHead.appendChild(uInput); uHead.appendChild(uBadge); uHead.appendChild(uDel);
+            uDiv.appendChild(uHead);
 
-            const wordsDiv = document.createElement('div'); wordsDiv.className = 'flex flex-wrap gap-2 mb-2';
-            rebuildWordsDiv(wordsDiv, lesson, mm);
+            uLessons.forEach(lesson => {
+                const lessonKey = `${textbookName}::${unitName}::${lesson.id}`;
+                const lDiv = document.createElement('div'); lDiv.className = 'lesson-row';
+                const lHead = document.createElement('div'); lHead.className = 'flex items-center justify-between';
+                const lLeft = document.createElement('div'); lLeft.className = 'flex items-center gap-2 flex-1';
+                const lArrow = document.createElement('span'); lArrow.className = 'text-brand-400 transition-transform text-xs font-bold cursor-pointer'; lArrow.textContent = '▶';
+                const lInput = document.createElement('input'); lInput.type = 'text'; lInput.value = lesson.name;
+                lInput.className = 'lesson-name-input text-sm'; lInput.style.width = Math.max(60, lesson.name.length * 14) + 'px';
+                lInput.addEventListener('input', () => { lInput.style.width = Math.max(60, lInput.value.length * 14) + 'px'; });
+                lInput.addEventListener('blur', async () => { const n = lInput.value.trim(); if (n && n !== lesson.name) { lesson.name = n; await dbPutLesson(lesson); lessons = await dbGetLessons(); } });
+                const lBadge = document.createElement('span'); lBadge.className = 'text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full font-bold'; lBadge.textContent = `${lesson.words.length} 词`;
+                const lDel = document.createElement('button'); lDel.className = 'w-7 h-7 flex items-center justify-center rounded-full hover:bg-red-50 text-gray-300 hover:text-red-400 transition-colors text-sm'; lDel.textContent = '🗑️';
+                lDel.onclick = async () => {
+                    if (!confirm(`确定删除「${lesson.name}」？`)) return;
+                    expandedLessons.delete(lessonKey);
+                    await dbDelLesson(lesson.id); lessons = await dbGetLessons(); renderLibrary();
+                };
+                lLeft.appendChild(lArrow); lLeft.appendChild(lInput); lLeft.appendChild(lBadge);
+                lHead.appendChild(lLeft); lHead.appendChild(lDel);
 
-            // Batch record button
-            const recRow = document.createElement('div'); recRow.className = 'flex items-center gap-2 mb-2';
-            const recBtn = document.createElement('button');
-            recBtn.className = 'btn-secondary'; recBtn.style.cssText = 'font-size:.75rem;padding:.35rem .75rem;border-radius:.5rem;white-space:nowrap';
-            recBtn.textContent = '🎙️ 批量录音';
-            recBtn.onclick = () => startBatchRecording(lesson);
-            const recCount = lesson.words.filter(w => audioCache[w]).length;
-            const recInfo = document.createElement('span');
-            recInfo.className = 'text-xs text-gray-400 font-bold';
-            recInfo.textContent = recCount > 0 ? `已录 ${recCount}/${lesson.words.length}` : '';
-            recRow.appendChild(recBtn); recRow.appendChild(recInfo);
-            wordsArea.appendChild(recRow);
+                const wordsArea = document.createElement('div'); wordsArea.className = 'mt-2 ml-4 pt-2 border-t border-gray-100';
+                const isLessonExpanded = expandedLessons.has(lessonKey);
+                if (!isLessonExpanded) wordsArea.classList.add('hidden');
+                if (isLessonExpanded) lArrow.style.transform = 'rotate(90deg)';
 
-            const addRow = document.createElement('div'); addRow.className = 'flex gap-2 items-center mt-1';
-            const addIn = document.createElement('input'); addIn.type = 'text'; addIn.placeholder = '添加词语（空格分隔）';
-            addIn.className = 'input-field text-xs'; addIn.style.cssText = 'padding:.35rem .6rem;border-radius:.5rem;flex:1';
-            const addBtn = document.createElement('button'); addBtn.className = 'btn-primary'; addBtn.style.cssText = 'font-size:.75rem;padding:.35rem .75rem;border-radius:.5rem;white-space:nowrap';
-            addBtn.textContent = '➕ 添加';
-            addBtn.onclick = async () => {
-                const nw = addIn.value.trim().split(/[\s,，、;；]+/).filter(w => w.length >= 1);
-                if (!nw.length) return;
-                const set = new Set(lesson.words); nw.forEach(w => set.add(w)); lesson.words = [...set];
-                await dbPutLesson(lesson); lessons = await dbGetLessons();
-                addIn.value = '';
+                const wordsDiv = document.createElement('div'); wordsDiv.className = 'flex flex-wrap gap-2 mb-2';
                 rebuildWordsDiv(wordsDiv, lesson, mm);
-                lBadge.textContent = `${lesson.words.length} 词`;
-                updateUnitBadge(unitName);
-                document.getElementById('lessonCount').textContent = `${lessons.length} 课`;
-            };
-            addIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click(); });
-            addRow.appendChild(addIn); addRow.appendChild(addBtn);
-            wordsArea.appendChild(wordsDiv); wordsArea.appendChild(addRow);
 
-            lArrow.onclick = () => {
-                wordsArea.classList.toggle('hidden');
-                const nowHidden = wordsArea.classList.contains('hidden');
-                lArrow.style.transform = nowHidden ? '' : 'rotate(90deg)';
-                if (nowHidden) expandedLessons.delete(lessonKey); else expandedLessons.add(lessonKey);
-            };
-            lDiv.appendChild(lHead); lDiv.appendChild(wordsArea); uBody.appendChild(lDiv);
-        });
+                const recRow = document.createElement('div'); recRow.className = 'flex items-center gap-2 mb-2';
+                const recBtn = document.createElement('button');
+                recBtn.className = 'btn-secondary'; recBtn.style.cssText = 'font-size:.75rem;padding:.35rem .75rem;border-radius:.5rem;white-space:nowrap';
+                recBtn.textContent = '🎙️ 批量录音';
+                recBtn.onclick = () => startBatchRecording(lesson);
+                const recCount = lesson.words.filter(w => audioCache[w]).length;
+                const recInfo = document.createElement('span');
+                recInfo.className = 'text-xs text-gray-400 font-bold';
+                recInfo.textContent = recCount > 0 ? `已录 ${recCount}/${lesson.words.length}` : '';
+                recRow.appendChild(recBtn); recRow.appendChild(recInfo);
+                wordsArea.appendChild(recRow);
 
-        uDiv.appendChild(uBody); container.appendChild(uDiv); uidx++;
+                const addRow = document.createElement('div'); addRow.className = 'flex gap-2 items-center mt-1';
+                const addIn = document.createElement('input'); addIn.type = 'text'; addIn.placeholder = '添加词语（空格分隔）';
+                addIn.className = 'input-field text-xs'; addIn.style.cssText = 'padding:.35rem .6rem;border-radius:.5rem;flex:1';
+                const addBtn = document.createElement('button'); addBtn.className = 'btn-primary'; addBtn.style.cssText = 'font-size:.75rem;padding:.35rem .75rem;border-radius:.5rem;white-space:nowrap';
+                addBtn.textContent = '➕ 添加';
+                addBtn.onclick = async () => {
+                    const nw = addIn.value.trim().split(/[\s,，、;；]+/).filter(w => w.length >= 1);
+                    if (!nw.length) return;
+                    const set = new Set(lesson.words); nw.forEach(w => set.add(w)); lesson.words = [...set];
+                    await dbPutLesson(lesson); lessons = await dbGetLessons();
+                    addIn.value = '';
+                    rebuildWordsDiv(wordsDiv, lesson, mm);
+                    lBadge.textContent = `${lesson.words.length} 词`;
+                    updateUnitBadge(unitName, textbookName);
+                    updateTextbookBadge(textbookName);
+                    document.getElementById('lessonCount').textContent = `${lessons.length} 课`;
+                };
+                addIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click(); });
+                addRow.appendChild(addIn); addRow.appendChild(addBtn);
+                wordsArea.appendChild(wordsDiv); wordsArea.appendChild(addRow);
+
+                lArrow.onclick = () => {
+                    wordsArea.classList.toggle('hidden');
+                    const nowHidden = wordsArea.classList.contains('hidden');
+                    lArrow.style.transform = nowHidden ? '' : 'rotate(90deg)';
+                    if (nowHidden) expandedLessons.delete(lessonKey); else expandedLessons.add(lessonKey);
+                };
+                lDiv.appendChild(lHead); lDiv.appendChild(wordsArea); uBody.appendChild(lDiv);
+            });
+
+            uDiv.appendChild(uBody); tbBody.appendChild(uDiv); uidx++;
+        }
+
+        tbDiv.appendChild(tbBody); container.appendChild(tbDiv); tidx++;
     }
 }
 
@@ -1346,31 +1578,49 @@ async function renderLessonSelection() {
     if (!lessons.length) { container.innerHTML = ''; noMsg.classList.remove('hidden'); startBtn.classList.add('hidden'); return; }
     noMsg.classList.add('hidden'); startBtn.classList.remove('hidden');
 
-    const grouped = groupByUnit(lessons);
+    const grouped = groupByTextbookAndUnit(lessons);
     let html = '';
-    for (const unitName in grouped) {
+    for (const textbookName in grouped) {
         html += `<div class="mb-3">
       <div class="flex items-center gap-2 mb-1.5">
-        <input type="checkbox" class="unit-checkbox w-5 h-5 accent-orange-500 rounded cursor-pointer" data-unit="${unitName}" onchange="toggleUnitCheck(this)" />
-        <span class="font-extrabold text-gray-700 text-sm cursor-pointer" onclick="this.previousElementSibling.click()">📦 ${unitName}</span>
+        <input type="checkbox" class="textbook-checkbox w-5 h-5 accent-orange-600 rounded cursor-pointer" data-textbook="${textbookName}" onchange="toggleTextbookCheck(this)" />
+        <span class="font-extrabold text-orange-900 text-sm cursor-pointer" onclick="this.previousElementSibling.click()">📚 ${textbookName}</span>
       </div>
-      <div class="ml-6 space-y-1.5">`;
-        grouped[unitName].forEach((lesson) => {
-            const realIdx = lessons.indexOf(lesson);
-            html += `<label class="lesson-check flex items-center gap-3 !py-2 !px-3">
-        <input type="checkbox" value="${realIdx}" data-unit="${unitName}" class="lesson-checkbox w-4 h-4 accent-orange-500 rounded cursor-pointer" onchange="updateStartBtn();this.closest('.lesson-check').classList.toggle('checked',this.checked);syncUnitCheckbox('${unitName}')" />
-        <div class="flex-1"><span class="font-bold text-gray-700 text-sm">${lesson.name}</span><span class="text-gray-400 text-xs ml-2">${lesson.words.length} 词</span></div>
-      </label>`;
-        });
+      <div class="ml-6 space-y-2">`;
+        for (const unitName in grouped[textbookName]) {
+            const unitKey = `${textbookName}::${unitName}`;
+            html += `<div class="mb-2">
+        <div class="flex items-center gap-2 mb-1">
+          <input type="checkbox" class="unit-checkbox w-4 h-4 accent-orange-500 rounded cursor-pointer" data-textbook="${textbookName}" data-unit="${unitName}" onchange="toggleUnitCheck(this)" />
+          <span class="font-bold text-gray-700 text-xs cursor-pointer" onclick="this.previousElementSibling.click()">📦 ${unitName}</span>
+        </div>
+        <div class="ml-6 space-y-1">`;
+            grouped[textbookName][unitName].forEach((lesson) => {
+                const realIdx = lessons.indexOf(lesson);
+                html += `<label class="lesson-check flex items-center gap-3 !py-2 !px-3">
+          <input type="checkbox" value="${realIdx}" data-textbook="${textbookName}" data-unit="${unitName}" class="lesson-checkbox w-4 h-4 accent-orange-500 rounded cursor-pointer" onchange="updateStartBtn();this.closest('.lesson-check').classList.toggle('checked',this.checked);syncUnitCheckbox('${textbookName}','${unitName}');syncTextbookCheckbox('${textbookName}')" />
+          <div class="flex-1"><span class="font-bold text-gray-700 text-sm">${lesson.name}</span><span class="text-gray-400 text-xs ml-2">${lesson.words.length} 词</span></div>
+        </label>`;
+            });
+            html += `</div></div>`;
+        }
         html += `</div></div>`;
     }
     container.innerHTML = html;
     updateStartBtn();
 }
 
+function toggleTextbookCheck(tbCb) {
+    const tb = tbCb.dataset.textbook, checked = tbCb.checked;
+    document.querySelectorAll(`.lesson-checkbox[data-textbook="${tb}"]`).forEach(cb => { cb.checked = checked; cb.closest('.lesson-check').classList.toggle('checked', checked); });
+    document.querySelectorAll(`.unit-checkbox[data-textbook="${tb}"]`).forEach(cb => { cb.checked = checked; });
+    updateStartBtn();
+}
+
 function toggleUnitCheck(unitCb) {
-    const unit = unitCb.dataset.unit, checked = unitCb.checked;
-    document.querySelectorAll(`.lesson-checkbox[data-unit="${unit}"]`).forEach(cb => { cb.checked = checked; cb.closest('.lesson-check').classList.toggle('checked', checked); });
+    const tb = unitCb.dataset.textbook, unit = unitCb.dataset.unit, checked = unitCb.checked;
+    document.querySelectorAll(`.lesson-checkbox[data-textbook="${tb}"][data-unit="${unit}"]`).forEach(cb => { cb.checked = checked; cb.closest('.lesson-check').classList.toggle('checked', checked); });
+    syncTextbookCheckbox(tb);
     updateStartBtn();
 }
 
@@ -1384,14 +1634,24 @@ function updateStartBtn() {
 function selectAllLessons(checked) {
     document.querySelectorAll('.lesson-checkbox').forEach(cb => { cb.checked = checked; cb.closest('.lesson-check').classList.toggle('checked', checked); });
     document.querySelectorAll('.unit-checkbox').forEach(cb => cb.checked = checked);
+    document.querySelectorAll('.textbook-checkbox').forEach(cb => cb.checked = checked);
     updateStartBtn();
 }
 
-function syncUnitCheckbox(unitName) {
-    const all = document.querySelectorAll(`.lesson-checkbox[data-unit="${unitName}"]`);
-    const checkedCount = document.querySelectorAll(`.lesson-checkbox[data-unit="${unitName}"]:checked`).length;
-    const ucb = document.querySelector(`.unit-checkbox[data-unit="${unitName}"]`);
-    if (ucb) ucb.checked = checkedCount === all.length;
+function syncUnitCheckbox(tbName, unitName) {
+    const sel = `.lesson-checkbox[data-textbook="${tbName}"][data-unit="${unitName}"]`;
+    const all = document.querySelectorAll(sel);
+    const checkedCount = document.querySelectorAll(`${sel}:checked`).length;
+    const ucb = document.querySelector(`.unit-checkbox[data-textbook="${tbName}"][data-unit="${unitName}"]`);
+    if (ucb) ucb.checked = all.length > 0 && checkedCount === all.length;
+}
+
+function syncTextbookCheckbox(tbName) {
+    const sel = `.lesson-checkbox[data-textbook="${tbName}"]`;
+    const all = document.querySelectorAll(sel);
+    const checkedCount = document.querySelectorAll(`${sel}:checked`).length;
+    const tcb = document.querySelector(`.textbook-checkbox[data-textbook="${tbName}"]`);
+    if (tcb) tcb.checked = all.length > 0 && checkedCount === all.length;
 }
 
 async function startDictation() {

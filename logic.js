@@ -3,58 +3,134 @@
 // This file uses ES Module exports for Vitest, but does NOT affect
 // the production app.js which loads via <script> tag.
 
+const TEXTBOOK_PATTERN = /^(人教版|部编版|苏教版|北师大版)?\s*[一二三四五六七八九十]年级\s*[上下]册[：:\s]*(.*)/;
+const TEXTBOOK_LABEL_PATTERN = /^课本[：:]\s*(.+)/;
+const UNIT_PATTERN = /^第\s*[一二三四五六七八九十百千\d]+\s*单元[：:\s]*(.*)/;
+const LESSON_PATTERN = /^(\d+)\s*[.、．·]?\s*(.+)/;
+const DEFAULT_TEXTBOOK = '默认课本';
+const DEFAULT_UNIT = '默认单元';
+
 /**
- * Parse structured text into units → lessons → words.
+ * Parse structured text into textbooks → units → lessons → words.
+ * Returns { textbooks: [{ name, units: [{ name, lessons: [{ name, words }] }] }], mode }.
+ * mode is 'structured' if any textbook/unit markers were detected, 'flat' for a single
+ * lesson with no structure, or 'empty' for no Chinese words.
  */
 export function parseTextToUnits(fullText, manualName) {
     const lines = fullText.split(/\n/);
-    const unitPattern = /^第\s*[一二三四五六七八九十百千\d]+\s*单元[：:\s]*(.*)/;
-    const lessonPattern = /^(\d+)\s*[.、．·]?\s*(.+)/;
-    let units = [], curUnit = null, curLesson = null;
+    let textbooks = [], curTextbook = null, curUnit = null, curLesson = null;
+
+    const ensureTextbook = () => {
+        if (!curTextbook) curTextbook = { name: DEFAULT_TEXTBOOK, units: [] };
+        return curTextbook;
+    };
+    const ensureUnit = () => {
+        const tb = ensureTextbook();
+        if (!curUnit) curUnit = { name: DEFAULT_UNIT, lessons: [] };
+        return { textbook: tb, unit: curUnit };
+    };
+
     for (const line of lines) {
         const trimmed = line.trim(); if (!trimmed) continue;
-        const unitMatch = trimmed.match(unitPattern);
+        const tbInlineMatch = trimmed.match(TEXTBOOK_PATTERN);
+        const tbLabelMatch = trimmed.match(TEXTBOOK_LABEL_PATTERN);
+        if (tbInlineMatch || tbLabelMatch) {
+            if (curLesson && curUnit) curUnit.lessons.push(curLesson);
+            if (curUnit && curTextbook) curTextbook.units.push(curUnit);
+            if (curTextbook) textbooks.push(curTextbook);
+            const name = tbInlineMatch
+                ? trimmed.replace(/[：:]\s*$/, '').trim()
+                : tbLabelMatch[1].trim();
+            curTextbook = { name, units: [] };
+            curUnit = null; curLesson = null; continue;
+        }
+        const unitMatch = trimmed.match(UNIT_PATTERN);
         if (unitMatch) {
             if (curLesson && curUnit) curUnit.lessons.push(curLesson);
-            if (curUnit) units.push(curUnit);
-            curUnit = { unitName: trimmed.replace(/[：:]\s*$/, '').trim(), lessons: [] };
+            if (curUnit) { ensureTextbook().units.push(curUnit); }
+            curUnit = { name: trimmed.replace(/[：:]\s*$/, '').trim(), lessons: [] };
             curLesson = null; continue;
         }
-        const lessonMatch = trimmed.match(lessonPattern);
+        const lessonMatch = trimmed.match(LESSON_PATTERN);
         if (lessonMatch) {
             const rest = lessonMatch[2].trim();
             const isExercise = /[：:_—]/.test(rest) || rest.replace(/[^\u4e00-\u9fa5]/g, '').length < 3;
             if (!isExercise) {
-                if (curLesson) { if (!curUnit) curUnit = { unitName: '默认单元', lessons: [] }; curUnit.lessons.push(curLesson); }
+                const { unit } = ensureUnit();
+                if (curLesson) unit.lessons.push(curLesson);
                 curLesson = { name: `${lessonMatch[1]} ${rest}`, words: [] }; continue;
             }
         }
+        const { unit } = ensureUnit();
         if (curLesson) {
             const words = trimmed.match(/[\u4e00-\u9fa5]{2,}/g) || [];
             words.forEach(w => { if (!curLesson.words.includes(w)) curLesson.words.push(w); });
         }
     }
-    if (curLesson) { if (!curUnit) curUnit = { unitName: '默认单元', lessons: [] }; curUnit.lessons.push(curLesson); }
-    if (curUnit) units.push(curUnit);
-    units = units.map(u => ({ ...u, lessons: u.lessons.filter(l => l.words.length > 0) })).filter(u => u.lessons.length > 0);
+    if (curLesson && curUnit) curUnit.lessons.push(curLesson);
+    if (curUnit && curTextbook) curTextbook.units.push(curUnit);
+    if (curTextbook) textbooks.push(curTextbook);
 
-    if (!manualName && units.length > 0) {
-        return { units, mode: 'structured' };
+    // Clean up: drop empty lessons/units; drop empty textbooks
+    textbooks = textbooks.map(t => ({
+        name: t.name,
+        units: t.units
+            .map(u => ({ name: u.name, lessons: u.lessons.filter(l => l.words.length > 0) }))
+            .filter(u => u.lessons.length > 0)
+    })).filter(t => t.units.length > 0);
+
+    if (!manualName && textbooks.length > 0) {
+        return { textbooks, mode: 'structured' };
     } else {
         const all = fullText.match(/[\u4e00-\u9fa5]{2,}/g) || [];
         const unique = [...new Set(all)];
-        if (!unique.length) return { units: [], mode: 'empty' };
-        return { units: [{ unitName: '默认单元', lessons: [{ name: manualName || '未命名课文', words: unique }] }], mode: 'flat' };
+        if (!unique.length) return { textbooks: [], mode: 'empty' };
+        return {
+            textbooks: [{
+                name: DEFAULT_TEXTBOOK,
+                units: [{ name: DEFAULT_UNIT, lessons: [{ name: manualName || '未命名课文', words: unique }] }]
+            }],
+            mode: 'flat'
+        };
     }
 }
 
 /**
- * Group a list of lesson objects by their `unit` field.
+ * Group lessons by their `textbook` field. Lessons without a textbook default to "默认课本".
+ */
+export function groupByTextbook(lessonList) {
+    const map = {};
+    lessonList.forEach(l => {
+        const t = l.textbook || DEFAULT_TEXTBOOK;
+        if (!map[t]) map[t] = [];
+        map[t].push(l);
+    });
+    return map;
+}
+
+/**
+ * Group lessons by textbook → unit. Returns { textbookName: { unitName: [lessons] } }.
+ */
+export function groupByTextbookAndUnit(lessonList) {
+    const map = {};
+    lessonList.forEach(l => {
+        const t = l.textbook || DEFAULT_TEXTBOOK;
+        const u = l.unit || DEFAULT_UNIT;
+        if (!map[t]) map[t] = {};
+        if (!map[t][u]) map[t][u] = [];
+        map[t][u].push(l);
+    });
+    return map;
+}
+
+/**
+ * Group a list of lesson objects by their `unit` field. Legacy 2-level grouper;
+ * treats textbook-less data identically to textbook-aware data (returns just the unit key).
  */
 export function groupByUnit(lessonList) {
     const map = {};
     lessonList.forEach(l => {
-        const u = l.unit || '默认单元';
+        const u = l.unit || DEFAULT_UNIT;
         if (!map[u]) map[u] = [];
         map[u].push(l);
     });
