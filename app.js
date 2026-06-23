@@ -95,6 +95,13 @@ async function showMainApp() {
         }
         lessons = await dbGetLessons();
     }
+    // Load textbooks table; backfill any textbook names used in lessons but missing from the table.
+    textbooks = await dbGetTextbooks();
+    const tbNamesInTable = new Set(textbooks.map(t => t.name));
+    const tbNamesInLessons = new Set(lessons.map(l => l.textbook || DEFAULT_TEXTBOOK));
+    const missing = [...tbNamesInLessons].filter(n => !tbNamesInTable.has(n));
+    for (const name of missing) { await dbAddTextbook(name); }
+    if (missing.length) textbooks = await dbGetTextbooks();
     // Auto-seed from words.js if user's DB is empty
     if (!lessons.length && typeof WORDS_DATA !== 'undefined' && WORDS_DATA.length) {
         for (const t of WORDS_DATA) {
@@ -105,6 +112,10 @@ async function showMainApp() {
             }
         }
         lessons = await dbGetLessons();
+        // Backfill any seed textbooks into the table
+        const seedMissing = [...new Set(lessons.map(l => l.textbook || DEFAULT_TEXTBOOK))].filter(n => !textbooks.find(x => x.name === n));
+        for (const name of seedMissing) { await dbAddTextbook(name); }
+        if (seedMissing.length) textbooks = await dbGetTextbooks();
     }
     // Load local IndexedDB recordings, then sync cloud recordings
     await AudioDB.loadAll();
@@ -137,6 +148,27 @@ async function dbPutLesson(obj) {
 async function dbDelLesson(id) {
     const { error } = await sb.from('lessons').delete().eq('id', id);
     if (error) console.error('dbDelLesson:', error);
+}
+async function dbGetTextbooks() {
+    const { data, error } = await sb.from('textbooks').select('*').order('name');
+    if (error) { console.error('dbGetTextbooks:', error); return []; }
+    return data || [];
+}
+async function dbAddTextbook(name) {
+    // Idempotent: ignore unique-constraint violations (code 23505)
+    const { data, error } = await sb.from('textbooks').insert({ name, user_id: currentUserId }).select().single();
+    if (error && error.code !== '23505') console.error('dbAddTextbook:', error);
+    return data;
+}
+async function dbDelTextbook(id) {
+    if (!id) return;
+    const { error } = await sb.from('textbooks').delete().eq('id', id);
+    if (error) console.error('dbDelTextbook:', error);
+}
+async function dbRenameTextbook(id, newName) {
+    if (!id) return;
+    const { error } = await sb.from('textbooks').update({ name: newName }).eq('id', id);
+    if (error) console.error('dbRenameTextbook:', error);
 }
 
 async function recordCharMistake(ch, fromWord, lessonName) {
@@ -184,6 +216,7 @@ async function dbDeleteDictationRecord(id) {
 
 // ==================== State ====================
 let lessons = [], currentWords = [], currentIndex = 0;
+let textbooks = []; // from `textbooks` table; one row per textbook name
 let pendingTextbooks = [];
 let selectedChars = new Set(), selectedCharMeta = {};
 let dictationMode = 'all';
@@ -1202,9 +1235,19 @@ async function confirmImport() {
         }
     }
     for (const t of pendingTextbooks) {
+        const tbName = t.name.trim();
+        // Ensure textbook exists in the table
+        if (!textbooks.find(x => x.name === tbName)) {
+            const inserted = await dbAddTextbook(tbName);
+            if (inserted) textbooks.push(inserted);
+            else {
+                // Conflict (race) — re-fetch the row
+                textbooks = await dbGetTextbooks();
+            }
+        }
         for (const u of t.units) {
             for (const l of u.lessons) {
-                const name = l.name.trim(), unitName = u.name.trim(), tbName = t.name.trim();
+                const name = l.name.trim(), unitName = u.name.trim();
                 let existing = lessons.find(x => x.name === name && x.unit === unitName && (x.textbook || DEFAULT_TEXTBOOK) === tbName);
                 if (existing) {
                     const set = new Set(existing.words); l.words.forEach(w => set.add(w)); existing.words = [...set];
@@ -1228,8 +1271,12 @@ async function confirmImport() {
 function populateManualTextbook() {
     const sel = document.getElementById('manualTextbook');
     if (!sel) return;
-    // Build options: built-ins + any custom textbooks already in DB
-    const used = new Set([...BUILTIN_TEXTBOOKS, ...lessons.map(l => l.textbook || DEFAULT_TEXTBOOK)]);
+    // Build options: built-ins + custom textbooks from `textbooks` table + any in-use values
+    const used = new Set([
+        ...BUILTIN_TEXTBOOKS,
+        ...textbooks.map(t => t.name),
+        ...lessons.map(l => l.textbook || DEFAULT_TEXTBOOK),
+    ]);
     sel.innerHTML = [...used].map(t => `<option value="${t}">${t}</option>`).join('') +
         '<option value="__custom__">➕ 新建课本...</option>';
     if (!sel.value) sel.value = DEFAULT_TEXTBOOK;
@@ -1247,6 +1294,8 @@ function resolveManualTextbook() {
         const opt = document.createElement('option'); opt.value = v; opt.textContent = v;
         sel.insertBefore(opt, sel.querySelector('option[value="__custom__"]'));
         sel.value = v;
+        // Persist to textbooks table (fire-and-forget; showMainApp will backfill on next load if this fails)
+        dbAddTextbook(v).then(row => { if (row) textbooks.push(row); });
     }
     return v || DEFAULT_TEXTBOOK;
 }
@@ -1277,6 +1326,7 @@ let libDragData = null;
 let expandedUnits = new Set();
 let expandedLessons = new Set();
 let expandedTextbooks = new Set();
+let collapsedDictationTextbooks = new Set();
 
 function rebuildWordsDiv(wordsDiv, lesson, mm) {
     wordsDiv.innerHTML = '';
@@ -1403,6 +1453,16 @@ async function renderLibrary() {
             if (!confirm(`将课本「${textbookName}」改名为「${n}」？所有该课本下的课文都会更新。`)) { tbInput.value = textbookName; return; }
             expandedTextbooks.delete(textbookName); expandedTextbooks.add(n);
             for (const l of tbLessons) { l.textbook = n; await dbPutLesson(l); }
+            // Update textbooks table
+            const tbRow = textbooks.find(t => t.name === textbookName);
+            if (tbRow) {
+                await dbRenameTextbook(tbRow.id, n);
+                tbRow.name = n;
+            } else {
+                // No row yet (shouldn't normally happen) — create one with the new name
+                const inserted = await dbAddTextbook(n);
+                if (inserted) textbooks.push(inserted);
+            }
             lessons = await dbGetLessons(); renderLibrary();
         });
         const tbBadge = document.createElement('span');
@@ -1415,6 +1475,12 @@ async function renderLibrary() {
         tbDel.onclick = async () => {
             if (!confirm(`确定删除整个课本「${textbookName}」及其下 ${tbLessons.length} 篇课文吗？此操作不可恢复！`)) return;
             for (const l of tbLessons) { await dbDelLesson(l.id); }
+            // Remove from textbooks table
+            const tbRow = textbooks.find(t => t.name === textbookName);
+            if (tbRow) {
+                await dbDelTextbook(tbRow.id);
+                textbooks = textbooks.filter(t => t.id !== tbRow.id);
+            }
             expandedTextbooks.delete(textbookName);
             lessons = await dbGetLessons(); renderLibrary();
             spawnEmoji('🗑️');
@@ -1581,12 +1647,14 @@ async function renderLessonSelection() {
     const grouped = groupByTextbookAndUnit(lessons);
     let html = '';
     for (const textbookName in grouped) {
+        const isCollapsed = collapsedDictationTextbooks.has(textbookName);
         html += `<div class="mb-3">
       <div class="flex items-center gap-2 mb-1.5">
+        <span class="text-brand-400 transition-transform text-xs font-bold cursor-pointer inline-block" style="width:1em;${isCollapsed ? '' : 'transform:rotate(90deg)'}" onclick="toggleDictationTextbook('${textbookName}', this)">▶</span>
         <input type="checkbox" class="textbook-checkbox w-5 h-5 accent-orange-600 rounded cursor-pointer" data-textbook="${textbookName}" onchange="toggleTextbookCheck(this)" />
         <span class="font-extrabold text-orange-900 text-sm cursor-pointer" onclick="this.previousElementSibling.click()">📚 ${textbookName}</span>
       </div>
-      <div class="ml-6 space-y-2">`;
+      <div class="ml-6 space-y-2 dictation-tb-body" data-tb-body="${textbookName}"${isCollapsed ? ' style="display:none"' : ''}>`;
         for (const unitName in grouped[textbookName]) {
             const unitKey = `${textbookName}::${unitName}`;
             html += `<div class="mb-2">
@@ -1608,6 +1676,16 @@ async function renderLessonSelection() {
     }
     container.innerHTML = html;
     updateStartBtn();
+}
+
+function toggleDictationTextbook(textbookName, arrowEl) {
+    const body = document.querySelector(`[data-tb-body="${textbookName}"]`);
+    if (!body) return;
+    const willHide = body.style.display !== 'none';
+    body.style.display = willHide ? 'none' : '';
+    arrowEl.style.transform = willHide ? '' : 'rotate(90deg)';
+    if (willHide) collapsedDictationTextbooks.add(textbookName);
+    else collapsedDictationTextbooks.delete(textbookName);
 }
 
 function toggleTextbookCheck(tbCb) {
