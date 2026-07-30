@@ -1,0 +1,5 @@
+.claude/
+check.html
+audit-output.json
+audit-supabase.mjs
+migration.sql
