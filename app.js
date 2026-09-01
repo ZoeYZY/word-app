@@ -163,6 +163,11 @@ async function dbRenameTextbook(id, newName) {
     const { error } = await sb.from('textbooks').update({ name: newName }).eq('id', id);
     if (error) console.error('dbRenameTextbook:', error);
 }
+async function dbSetTextbookHidden(id, hidden) {
+    if (!id) return;
+    const { error } = await sb.from('textbooks').update({ hidden: !!hidden }).eq('id', id);
+    if (error) console.error('dbSetTextbookHidden:', error);
+}
 
 async function recordCharMistake(ch, fromWord, lessonName) {
     const today = new Date().toISOString().split('T')[0];
@@ -1461,6 +1466,20 @@ async function renderLibrary() {
         const tbBadge = document.createElement('span');
         tbBadge.className = 'text-xs bg-brand-200 text-brand-700 px-2 py-0.5 rounded-full font-bold textbook-badge';
         tbBadge.textContent = `${tbLessons.length} 课 · ${tbWords} 词`;
+        const tbRow = textbooks.find(t => t.name === textbookName);
+        const isTbHidden = !!(tbRow && tbRow.hidden);
+        const tbHide = document.createElement('button');
+        tbHide.className = 'text-gray-300 hover:text-orange-500 text-sm cursor-pointer';
+        tbHide.title = isTbHidden ? '在默写 tab 恢复显示' : '在默写 tab 隐藏';
+        tbHide.textContent = isTbHidden ? '🚫' : '👁️';
+        tbHide.onclick = async () => {
+            if (!tbRow) return;
+            const newHidden = !isTbHidden;
+            if (newHidden && !confirm(`隐藏课本「${textbookName}」？隐藏后默写 tab 不会显示，但词库 tab 仍可管理。`)) return;
+            await dbSetTextbookHidden(tbRow.id, newHidden);
+            tbRow.hidden = newHidden;
+            renderLibrary();
+        };
         const tbDel = document.createElement('button');
         tbDel.className = 'ml-auto text-gray-300 hover:text-red-400 text-sm cursor-pointer';
         tbDel.title = '删除整个课本';
@@ -1490,9 +1509,24 @@ async function renderLibrary() {
             if (nowHidden) expandedTextbooks.delete(textbookName); else expandedTextbooks.add(textbookName);
         };
         tbArrow.onclick = toggleTb; tbIcon.onclick = toggleTb;
-        tbHead.appendChild(tbArrow); tbHead.appendChild(tbIcon); tbHead.appendChild(tbInput); tbHead.appendChild(tbBadge); tbHead.appendChild(tbDel);
+        if (isTbHidden) {
+            // Gray out: name struck through, badge faded, no body content rendered below.
+            tbInput.style.color = '#9CA3AF';
+            tbInput.style.textDecoration = 'line-through';
+            tbBadge.style.opacity = '0.5';
+        }
+        tbHead.appendChild(tbArrow); tbHead.appendChild(tbIcon); tbHead.appendChild(tbInput); tbHead.appendChild(tbBadge); tbHead.appendChild(tbHide);
+        // tbDel stays at the right via ml-auto (other buttons sit before it)
+        tbDel.style.marginLeft = 'auto';
+        tbHead.appendChild(tbDel);
         tbDiv.appendChild(tbHead);
         tbDiv.dataset.textbookBlock = textbookName; // ensure selector works after children appended
+
+        // Hidden textbooks render header only (gray + strike-through); skip units/lessons.
+        if (isTbHidden) {
+            container.appendChild(tbDiv); tidx++;
+            continue;
+        }
 
         // === Units within this textbook ===
         let uidx = 0;
@@ -1640,6 +1674,9 @@ async function renderLessonSelection() {
     const grouped = groupByTextbookAndUnit(lessons);
     let html = '';
     for (const textbookName in grouped) {
+        // Skip textbooks hidden by user in the library tab.
+        const tbRow = textbooks.find(t => t.name === textbookName);
+        if (tbRow && tbRow.hidden) continue;
         const isCollapsed = collapsedDictationTextbooks.has(textbookName);
         html += `<div class="mb-3">
       <div class="flex items-center gap-2 mb-1.5">
