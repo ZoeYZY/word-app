@@ -48,18 +48,34 @@ ORDER BY ordinal_position;
 ALTER TABLE public.textbooks
     ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE;
 
--- =============================================================
--- 完成！现在可以做：
---   a) 在 words.js 里加 5 年级课本种子数据（可选）
---   b) 重新登录 App，让 showMainApp() 自动 seed words.js 内容到数据库
---   c) app.js 第 87-97 行的 one-time migration 会把所有 textbook 为空的
---      旧课改成 '默认课本'（你数据库是空的所以这次不会触发）
--- =============================================================
-
--- =============================================================
--- 完成！现在可以做：
---   a) 在 words.js 里加 5 年级课本种子数据（可选）
---   b) 重新登录 App，让 showMainApp() 自动 seed words.js 内容到数据库
---   c) app.js 第 87-97 行的 one-time migration 会把所有 textbook 为空的
---      旧课改成 '默认课本'（你数据库是空的所以这次不会触发）
--- =============================================================
+-- 6. 建 voice_packs 表：用户自定义语音包元数据（之前只在 localStorage，多设备不同步）
+CREATE TABLE IF NOT EXISTS public.voice_packs (
+    id TEXT PRIMARY KEY,                    -- 'pack_<timestamp>' 客户端生成，保持与 IndexedDB 一致
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_voice_packs_user ON public.voice_packs (user_id);
+-- 同一用户下语音包名唯一
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'voice_packs_user_name_unique'
+          AND conrelid = 'public.voice_packs'::regclass
+    ) THEN
+        ALTER TABLE public.voice_packs
+            ADD CONSTRAINT voice_packs_user_name_unique UNIQUE (user_id, name);
+    END IF;
+END $$;
+-- 启用 RLS：只能读写自己的
+ALTER TABLE public.voice_packs ENABLE ROW LEVEL SECURITY;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies WHERE policyname = 'voice_packs_owner_all'
+    ) THEN
+        CREATE POLICY voice_packs_owner_all ON public.voice_packs
+            FOR ALL USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
+    END IF;
+END $$;

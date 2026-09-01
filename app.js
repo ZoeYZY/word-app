@@ -113,8 +113,47 @@ async function showMainApp() {
     // Load local IndexedDB recordings, then sync cloud recordings
     await AudioDB.loadAll();
     await AudioDB.loadAllFromCloud();
+    // Sync voice pack list from cloud (merges with any local-only packs)
+    try {
+        const cloudPacks = await dbGetVoicePacks();
+        const localIds = new Set(appSettings.voicePacks.map(p => p.id));
+        const localDefault = appSettings.voicePacks.find(p => p.id === 'default');
+        const merged = [];
+        if (localDefault) merged.push(localDefault);
+        // Add cloud packs not already in local list
+        for (const cp of cloudPacks) {
+            if (!localIds.has(cp.id)) merged.push({ id: cp.id, name: cp.name });
+        }
+        // Keep any local-only custom packs (so a pack created on a device still works
+        // before the cloud sync round-trips back)
+        for (const lp of appSettings.voicePacks) {
+            if (lp.id !== 'default' && !merged.find(x => x.id === lp.id)) merged.push(lp);
+        }
+        if (merged.length !== appSettings.voicePacks.length ||
+            merged.some((p, i) => p.id !== appSettings.voicePacks[i]?.id)) {
+            appSettings.voicePacks = merged;
+            localStorage.setItem('yoyo_settings', JSON.stringify(appSettings));
+        }
+    } catch (e) { console.warn('Cloud voice-pack sync failed (using local list):', e); }
     // Default tab
     switchTab('library');
+}
+
+async function dbGetVoicePacks() {
+    const { data, error } = await sb.from('voice_packs').select('*').order('created_at');
+    if (error) { console.error('dbGetVoicePacks:', error); return []; }
+    return data || [];
+}
+async function dbAddVoicePack(id, name) {
+    // Idempotent: ignore unique-constraint violations (code 23505)
+    const { data, error } = await sb.from('voice_packs').insert({ id, name, user_id: currentUserId }).select().single();
+    if (error && error.code !== '23505') console.error('dbAddVoicePack:', error);
+    return data;
+}
+async function dbDelVoicePack(id) {
+    if (!id) return;
+    const { error } = await sb.from('voice_packs').delete().eq('id', id);
+    if (error) console.error('dbDelVoicePack:', error);
 }
 
 // ==================== Data Layer (Supabase + user_id) ====================
@@ -358,11 +397,18 @@ function playOnlineVoice(word) {
 }
 
 // ==================== Voice Pack Management ====================
-function createVoicePack() {
+async function createVoicePack() {
     const name = prompt('请输入语音包名称（如：妈妈的声音）');
     if (!name || !name.trim()) return;
+    const trimmed = name.trim();
     const id = 'pack_' + Date.now();
-    appSettings.voicePacks.push({ id, name: name.trim() });
+    // Persist to cloud first; only update local state on success
+    const row = await dbAddVoicePack(id, trimmed);
+    if (!row) {
+        alert('❌ 创建语音包失败（云端未保存）。请检查 Supabase voice_packs 表是否已创建。');
+        return;
+    }
+    appSettings.voicePacks.push({ id, name: trimmed });
     localStorage.setItem('yoyo_settings', JSON.stringify(appSettings));
     renderVoicePackList();
     spawnEmoji('🎉');
@@ -371,21 +417,28 @@ function createVoicePack() {
 async function deleteVoicePack(packId) {
     if (packId === 'default') { alert('默认录音不能删除'); return; }
     if (!confirm('确定删除这个语音包及其所有录音吗？')) return;
-    // Delete all recordings in this pack
-    const db = await AudioDB.open();
-    const tx = db.transaction('audio', 'readwrite');
-    const store = tx.objectStore('audio');
-    const req = store.getAll();
-    req.onsuccess = () => {
-        const all = req.result || [];
-        all.forEach(r => {
-            if (r.word && r.word.startsWith(`pack_${packId}::`)) {
-                store.delete(r.word);
-                delete audioCache[r.word];
-            }
+    // Delete all recordings in this pack from IndexedDB
+    try {
+        const db = await AudioDB.open();
+        const tx = db.transaction('audio', 'readwrite');
+        const store = tx.objectStore('audio');
+        const req = store.getAll();
+        await new Promise((resolve) => {
+            req.onsuccess = () => {
+                const all = req.result || [];
+                all.forEach(r => {
+                    if (r.word && r.word.startsWith(`pack_${packId}::`)) {
+                        store.delete(r.word);
+                        delete audioCache[r.word];
+                    }
+                });
+                resolve();
+            };
+            req.onerror = () => resolve();
         });
-    };
-    // Remove from packs list
+    } catch (e) { console.warn('IndexedDB delete failed:', e); }
+    // Remove from packs list (local + cloud)
+    await dbDelVoicePack(packId);
     appSettings.voicePacks = appSettings.voicePacks.filter(p => p.id !== packId);
     if (appSettings.activePackId === packId) appSettings.activePackId = 'default';
     localStorage.setItem('yoyo_settings', JSON.stringify(appSettings));
@@ -476,8 +529,12 @@ const AudioDB = {
             });
         } catch (e) { console.warn('IndexedDB save failed:', e); }
 
-        // 2. Upload to Supabase Storage (if logged in)
-        if (!currentUserId || typeof sb === 'undefined') return;
+        // 2. Upload to Supabase Storage (if logged in). Surface failures so user knows
+        //    recordings won't survive a device switch — don't silently lose data.
+        if (!currentUserId || typeof sb === 'undefined') {
+            alert('⚠️ 未登录，录音只保存在本地浏览器。换设备/清缓存后会丢失。请先登录。');
+            return;
+        }
         const storagePath = `${currentUserId}/${packId || 'default'}/${encodeURIComponent(word)}.webm`;
         try {
             // Convert dataUrl to Blob
@@ -498,6 +555,7 @@ const AudioDB = {
             }, { onConflict: 'user_id,word,pack_id' });
         } catch (e) {
             console.warn('Cloud audio save failed (saved locally):', e);
+            alert('⚠️ 录音上传云端失败，仅保存在本地。可能原因：\n• Storage bucket "voice-recordings" 未创建\n• voice_recordings 表不存在\n请检查 Supabase 控制台。');
         }
     },
     async get(word, packId) {
@@ -640,7 +698,7 @@ async function toggleWordRecording(word, btn) {
     try {
         const dataUrl = await dataPromise;
         clearTimeout(timeout);
-        await AudioDB.save(word, dataUrl);
+        await AudioDB.save(word, dataUrl, appSettings.activePackId);
         btn.classList.remove('rec-btn-recording');
         btn.classList.add('rec-btn-has');
         btn.textContent = '🔊';
