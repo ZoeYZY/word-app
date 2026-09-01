@@ -1,6 +1,6 @@
 const WORDS_DATA = [
     {
-        textbook: "人教版五年级上册",
+        textbook: "人教版五年级上",
         units: [
             {
                 unit: "第一单元", lessons: [
@@ -13,7 +13,7 @@ const WORDS_DATA = [
         ],
     },
     {
-        textbook: "人教版四年级下册",
+        textbook: "语文四年级下",
         units: [
             {
                 unit: "第一单元", lessons: [
