@@ -228,7 +228,7 @@ let appSettings = {
     voiceURI: '',
     rate: 0.8,
     pitch: 1.1,
-    voiceSource: 'online',    // 'browser' | 'online' | 'custom'
+    voiceSource: 'browser',   // 'browser' | 'online' | 'custom' — default switched from 'online' so new users get OS/Edge natural voice
     onlineProvider: 'youdao', // 'youdao' | 'baidu'
     activePackId: 'default',
     voicePacks: [{ id: 'default', name: '默认录音' }]
@@ -1837,8 +1837,15 @@ async function speakWord(text) {
         try { await playOnlineVoice(text); return; } catch (e) { console.warn('Online TTS failed, falling back to browser TTS'); }
     }
 
-    // 4. Final fallback: browser SpeechSynthesis
-    if (!('speechSynthesis' in window)) return;
+    // 4. Try browser SpeechSynthesis. If voiceSource === 'browser' (new default)
+    //    prefer OS-installed local zh-CN voices (Xiaoxiao / Yaoyao / Yating / Tingting).
+    //    Falls back to online if no zh voice is available so the child always hears something.
+    if (!('speechSynthesis' in window)) {
+        if (appSettings.voiceSource !== 'online') {
+            try { await playOnlineVoice(text); } catch (e) { console.warn('No speech available:', e); }
+        }
+        return;
+    }
     window.speechSynthesis.cancel();
 
     // Chrome/Edge load voices asynchronously — wait for them if not yet available
@@ -1851,7 +1858,7 @@ async function speakWord(text) {
                 resolve();
             };
             window.speechSynthesis.addEventListener('voiceschanged', handler);
-            // Safety timeout (5s) in case voicesnever fire
+            // Safety timeout (5s) in case voices never fire
             setTimeout(resolve, 5000);
         });
     }
@@ -1860,13 +1867,26 @@ async function speakWord(text) {
     u.lang = 'zh-CN';
     u.rate = appSettings.rate;
     u.pitch = appSettings.pitch;
-    const selectedVoice = voices.find(v => v.voiceURI === appSettings.voiceURI);
-    if (selectedVoice) u.voice = selectedVoice;
-    else {
-        const zh = voices.find(v => v.lang.startsWith('zh'));
-        if (zh) u.voice = zh;
+    // Pick best available voice: user-saved URI > high-quality known names > first local zh > first remote zh
+    const PREFERRED = ['Xiaoxiao', 'Yaoyao', 'Yating', 'Tingting', 'Mei', 'Lili', 'Huihui', 'Tracy', 'Hanhan'];
+    const zhVoices = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith('zh'));
+    const localZh = zhVoices.filter(v => v.localService === true);
+    let chosen = null;
+    if (appSettings.voiceURI) chosen = voices.find(v => v.voiceURI === appSettings.voiceURI) || null;
+    if (!chosen) {
+        const preferredLocal = localZh.find(v => PREFERRED.some(p => v.name.includes(p)));
+        if (preferredLocal) chosen = preferredLocal;
+        else if (localZh.length) chosen = localZh[0];
+        else if (zhVoices.length) chosen = zhVoices[0];
     }
+    if (chosen) u.voice = chosen;
     window.speechSynthesis.speak(u);
+    // If no zh voice at all, browser will speak English — fall back to online after a short grace period
+    if (!zhVoices.length) {
+        setTimeout(async () => {
+            try { await playOnlineVoice(text); } catch (e) { /* give up silently */ }
+        }, 50);
+    }
 }
 
 function nextWord() { currentIndex++; showCurrentWord(); }
