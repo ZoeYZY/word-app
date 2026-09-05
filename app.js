@@ -345,10 +345,30 @@ function initVoiceList() {
     const select = document.getElementById('voiceSelect');
     if (!select) return;
     const current = select.value || appSettings.voiceURI;
-    select.innerHTML = voices
-        .filter(v => v.lang.includes('zh') || v.lang.includes('CN') || v.lang.includes('HK') || v.lang.includes('TW'))
+    const zhVoices = voices.filter(v => v.lang.includes('zh') || v.lang.includes('CN') || v.lang.includes('HK') || v.lang.includes('TW'));
+    select.innerHTML = zhVoices
         .map(v => `<option value="${v.voiceURI}" ${v.voiceURI === current ? 'selected' : ''}>${v.name} (${v.lang})</option>`)
         .join('') || '<option value="">无可用中文语音</option>';
+    // Show install hint on iOS/Android when zh voice list is thin (no high-quality natural voices available)
+    showVoiceInstallHint(zhVoices);
+}
+
+// Detect mobile / iOS user-agent and zh voice quality. Show install hint card when relevant.
+function showVoiceInstallHint(zhVoices) {
+    const hint = document.getElementById('voiceInstallHint');
+    if (!hint) return;
+    const ua = navigator.userAgent || '';
+    const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const isAndroid = /Android/.test(ua);
+    if (!isIOS && !isAndroid) { hint.classList.add('hidden'); return; }
+    // High-quality voices are Microsoft Natural / Google neural names. iOS only ships a couple.
+    const HIGH_QUALITY = ['Xiaoxiao', 'Yunyang', 'Yunjian', 'Xiaoyi', 'Yunxi', 'Yunye', 'Yating', 'Tingting', 'Mei', 'Tracy', 'Hanhan', 'Lili', 'Huihui', 'Neural', 'Natural', 'Online'];
+    const hasHighQuality = zhVoices.some(v => HIGH_QUALITY.some(n => v.name.includes(n)));
+    if (hasHighQuality || zhVoices.length >= 3) {
+        hint.classList.add('hidden');
+    } else {
+        hint.classList.remove('hidden');
+    }
 }
 
 function testVoice() {
