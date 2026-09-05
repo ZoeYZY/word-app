@@ -1343,17 +1343,43 @@ function resolveManualTextbook() {
     if (!sel) return DEFAULT_TEXTBOOK;
     let v = sel.value;
     if (v === '__custom__') {
+        // 用户选了 ➕ 但还没填名字——交给 onManualTextbookChange 处理;这里作为兜底再弹一次
         const name = prompt('请输入新课本名称（如：人教版四年级上册）');
-        if (!name || !name.trim()) return sel.options[sel.selectedIndex]?.dataset.prev || DEFAULT_TEXTBOOK;
-        v = name.trim();
-        // Insert as option and select it
-        const opt = document.createElement('option'); opt.value = v; opt.textContent = v;
-        sel.insertBefore(opt, sel.querySelector('option[value="__custom__"]'));
-        sel.value = v;
-        // Persist to textbooks table (fire-and-forget; showMainApp will backfill on next load if this fails)
-        dbAddTextbook(v).then(row => { if (row) textbooks.push(row); });
+        if (!name || !name.trim()) {
+            sel.value = sel.dataset.lastValid || DEFAULT_TEXTBOOK;
+            return sel.value;
+        }
+        v = addManualTextbookOption(name.trim());
     }
     return v || DEFAULT_TEXTBOOK;
+}
+
+// 用户在下拉里选了 ➕ 新建课本 时立刻弹 prompt。成功插入新 option + 同步到 textbooks 表。
+async function onManualTextbookChange(sel) {
+    if (sel.value !== '__custom__') { sel.dataset.lastValid = sel.value; return; }
+    const name = prompt('请输入新课本名称（如：人教版四年级上册）');
+    if (!name || !name.trim()) {
+        // 取消:回退到上一次有效的值
+        sel.value = sel.dataset.lastValid || DEFAULT_TEXTBOOK;
+        return;
+    }
+    addManualTextbookOption(name.trim());
+    sel.dataset.lastValid = sel.value;
+}
+
+// 把新课本名插入下拉,选中,同步到云端 textbooks 表
+function addManualTextbookOption(name) {
+    const sel = document.getElementById('manualTextbook');
+    if (!sel) return name;
+    // 已存在则直接选中
+    const existing = [...sel.options].find(o => o.value === name);
+    if (existing) { sel.value = existing.value; return name; }
+    const opt = document.createElement('option'); opt.value = name; opt.textContent = name;
+    sel.insertBefore(opt, sel.querySelector('option[value="__custom__"]'));
+    sel.value = name;
+    // Persist to cloud. await 失败时退到 local fallback (showMainApp 会 backfill)
+    dbAddTextbook(name).then(row => { if (row) textbooks.push(row); }).catch(e => console.warn('dbAddTextbook failed:', e));
+    return name;
 }
 
 async function addManualWords() {

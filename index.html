@@ -941,7 +941,7 @@
             <div class="icon-dot"></div><span>手动添加词语</span> ✍️
           </div>
           <div class="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
-            <select id="manualTextbook" class="input-field"></select>
+            <select id="manualTextbook" class="input-field" onchange="onManualTextbookChange(this)"></select>
             <input id="manualUnit" type="text" placeholder="单元名称" class="input-field" value="默认单元" />
             <input id="manualLesson" type="text" placeholder="课文名称" class="input-field" />
             <input id="manualWords" type="text" placeholder="词语（空格或逗号分隔）" class="input-field" />
