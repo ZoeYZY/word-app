@@ -1,9 +1,9 @@
 // ==================== Built-in Textbooks ====================
 const BUILTIN_TEXTBOOKS = [
-    '人教版五年级上',
+    '语文五年级上',
     '语文四年级下',
 ];
-const DEFAULT_TEXTBOOK = '人教版五年级上';
+const DEFAULT_TEXTBOOK = '语文五年级上';
 const DEFAULT_UNIT = '默认单元';
 
 // ==================== Supabase Client ====================
