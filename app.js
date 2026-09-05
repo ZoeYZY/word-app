@@ -2100,8 +2100,18 @@ async function renderHistory() {
     emptyEl.classList.add('hidden');
     const byLesson = {};
     all.forEach(m => { (m.lessons || ['未知课文']).forEach(l => { if (!byLesson[l]) byLesson[l] = []; byLesson[l].push(m); }); });
+    // Sort lessons by most recent mistake date (descending). Most recent errors first.
+    // Each mistake has a `dates` array of ISO date strings; lesson's "latest" = max of all its chars' dates.
+    const sortedLessons = Object.keys(byLesson).sort((a, b) => {
+        const latest = (lesson) => {
+            let max = '';
+            for (const m of byLesson[lesson]) for (const d of (m.dates || [])) if (d > max) max = d;
+            return max;
+        };
+        return latest(b).localeCompare(latest(a));   // descending
+    });
     let html = '';
-    for (const name in byLesson) {
+    for (const name of sortedLessons) {
         const chars = byLesson[name]; chars.sort((a, b) => b.count - a.count);
         html += `<div class="app-card p-6 animate-slide-up mb-4">
       <div class="section-label mb-4"><div class="icon-dot"></div><span>${name}</span></div>
